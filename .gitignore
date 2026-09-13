@@ -1,0 +1,53 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# CK sync — per-machine "last synced" hashes for the CK Charts button
+server/.ck_sync_state.json
+# CK sync — saved SharePoint sign-in for "Pull latest from SharePoint" (`npm run ck:login`)
+server/.ck-session.json
+# CK dedupe — local fallback snapshots when the backups table write is rejected
+server/ck_dedupe_backups/
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# server
+/server/node_modules
+/server/embellishment.db
+/server/.env
