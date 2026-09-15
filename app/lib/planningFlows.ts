@@ -5,9 +5,10 @@ import { isCkFamilyCategory } from "./ckCategories";
 
 // BABL runs on its own, much longer turnaround than every other plant: fabric sent there isn't
 // received (FR) the next working day like everywhere else — it takes 8 working days — and BABL's
-// own strike-off submission (FR -> PPS) takes another 8, instead of the 1-3 days every other flow
-// uses for that step. Checked via extractPlants (not a raw substring match) so it also fires
-// correctly on multi-plant chains like "BABL>>LEEMA", not just a lone "BABL" cell.
+// approval turnaround (-> NY) is the same 8 days instead of the usual 1. Every other step in the
+// flow (FR -> PPS included) uses the same lead time as every other plant. Checked via
+// extractPlants (not a raw substring match) so it also fires correctly on multi-plant chains like
+// "BABL>>LEEMA", not just a lone "BABL" cell.
 const BABL_LONG_LEAD_DAYS = 8;
 function isBablPlant(plantRaw: unknown): boolean {
   return extractPlants(String(plantRaw ?? "")).includes("BABL");
@@ -137,7 +138,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     sequence: ["FS", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
       { fromEvent: "FS", toEvent: "FR", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 3, label: "3d" },
+      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
       { fromEvent: "NYC", toEvent: "MAST", leadTimeDays: 3, label: "3d" },
@@ -194,7 +195,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     sequence: ["FS", "FR", "PPS", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
       { fromEvent: "FS", toEvent: "FR", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 3, label: "3d" },
+      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "PPS", toEvent: "MAST", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MAST", toEvent: "REAP/FCHP", leadTimeDays: 3, label: "3d" },
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
@@ -215,7 +216,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     steps: [
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 3, label: "3d" },
+      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
       { fromEvent: "NYC", toEvent: "MAST", leadTimeDays: 3, label: "3d" },
@@ -279,7 +280,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     steps: [
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
       { fromEvent: "GMT", toEvent: "FR", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 3, label: "3d" },
+      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
       { fromEvent: "NYC", toEvent: "MAST", leadTimeDays: 3, label: "3d" },
@@ -341,7 +342,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     steps: [
       { fromEvent: "CSRF", toEvent: "CPS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "CPS", toEvent: "FR", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 3, label: "3d" },
+      { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
       { fromEvent: "NYC", toEvent: "MAST", leadTimeDays: 3, label: "3d" },
@@ -479,12 +480,12 @@ export function calculateAutoSchedule(
 
   // Advance date step by step along the flow using working days (skipping Sat/Sun)
   flow.steps.forEach((step) => {
-    const fromBase = step.fromEvent.split("-")[0].toUpperCase();
     const toBase = step.toEvent.split("-")[0].toUpperCase();
-    // BABL override: fabric arriving there (-> FR) takes 8 working days instead of the usual 1,
-    // and BABL's own strike-off submission (FR -> PPS/PPSES/PPSDS) takes 8 instead of 1-3.
+    // BABL override: fabric arriving there (-> FR) and BABL's approval turnaround (-> NY) each
+    // take 8 working days instead of the usual 1. Every other step (FR -> PPS included) uses the
+    // same lead time as every other plant.
     const effectiveLeadTimeDays =
-      isBabl && (toBase === "FR" || (fromBase === "FR" && toBase.startsWith("PPS")))
+      isBabl && (toBase === "FR" || toBase === "NY")
         ? BABL_LONG_LEAD_DAYS
         : step.leadTimeDays;
     current = addWorkingDays(current, effectiveLeadTimeDays);
@@ -1661,15 +1662,14 @@ export function autoScheduleForwardFromEvent<T extends Record<string, unknown>>(
 
   // Walk forward. flow.steps[i] is the transition sequence[i] -> sequence[i+1], so the hops after
   // the anchor are steps[seqIndex], steps[seqIndex+1], … Each adds its lead time in working days
-  // (BABL's long FR / FR->PPS turnaround respected, same as calculateAutoSchedule).
+  // (BABL's long FR / NY turnaround respected, same as calculateAutoSchedule).
   let current = new Date(anchorDateStr);
   for (let i = seqIndex; i < flow.steps.length; i++) {
     const step = flow.steps[i];
-    const fromBase = step.fromEvent.split("-")[0].toUpperCase();
     const toSlot = step.toEvent.trim().toUpperCase();
     const toBase = toSlot.replace(/-(S|F|T|PASS|FAIL)$/i, "");
     const lead =
-      isBabl && (toBase === "FR" || (fromBase === "FR" && toBase.startsWith("PPS")))
+      isBabl && (toBase === "FR" || toBase === "NY")
         ? BABL_LONG_LEAD_DAYS
         : step.leadTimeDays;
     current = addWorkingDays(current, lead);

@@ -578,7 +578,13 @@ export default function AdvancedDashboard({
       if (groupStatus === "c+p") {
         cp.push(cRows.find((r) => getRowStatus(r) === "c+p") ?? cRows[0]);
       } else if (groupStatus === "sent-pending") {
-        commentsPending.push(cRows.find(hasStrikeOffSubmission) ?? cRows[0]);
+        // Match getGroupStatus's own evidence rule: prefer a non-dropped row carrying the
+        // DHL/comment trace over a superseded dropped leg's stale evidence (see db.ts).
+        commentsPending.push(
+          cRows.find((r) => getRowStatus(r) !== "dropped" && hasStrikeOffSubmission(r)) ??
+            cRows.find(hasStrikeOffSubmission) ??
+            cRows[0],
+        );
       }
     });
 

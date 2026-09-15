@@ -1282,13 +1282,24 @@ export const hasStrikeOffSubmission = (r: EmbellishmentRow): boolean =>
 //                    explicitly returned "comments pending".
 //   'sent-pending' — either (a) VS/PINK with no C+P (or any other) verdict but the
 //                    strike-off has physically gone out for review (hasStrikeOffSubmission
-//                    on any row — a DHL number or a strike-off comment), or (b) ANY
-//                    CK-family group whose row status is 'c+p' — CK's "CP" letter code
-//                    already means "Comments Pending", not "C+P", so it belongs here.
+//                    on a row that ISN'T itself dropped — a DHL number or a strike-off
+//                    comment), or (b) ANY CK-family group whose row status is 'c+p' —
+//                    CK's "CP" letter code already means "Comments Pending", not "C+P",
+//                    so it belongs here.
 // "Submission Pending" ('pending') still means "not sent to NY yet". CK's SP letter code
 // stays 'pending' straight from getCkRowStatus. Full "Sent"/dispatch
 // (isRowSent) is a separate axis. Both buckets are active, so the partition is now
 // approved + c+p + sent-pending + resubmit + pending (+ hold + dropped) = total.
+//
+// The hasStrikeOffSubmission check is scoped to non-dropped rows only — a combo that was
+// replanned after a drop (an old leg carries a DHL number / strike-off comment from before
+// it got dropped, and a fresh leg for the SAME combo is now sitting at Submission Pending
+// with no evidence of its own yet) must not inherit "Comments Pending" from the dropped
+// leg's stale evidence: nothing is actually outstanding with NY for that combo right now.
+// Without this guard those combos also disagreed with the "NY Sent" dispatch axis
+// (isRowSent, which already excludes dropped rows) — confirmed 2026-09-15 on VS AE SU27,
+// where 4 such combos inflated "Comments Pending" to 41 while "NY Sent" (correctly) stayed
+// at 41 too, by coincidence equal to it instead of the expected Approved+C+P+CommentsPending+Resubmit.
 export const getGroupStatus = (groupRows: EmbellishmentRow[]): GroupStatus => {
   const s = groupRows.map(getRowStatus);
   const anyCk = groupRows.some((r) => isCkFamilyCategory(String(r.col3 || '')));
@@ -1300,7 +1311,9 @@ export const getGroupStatus = (groupRows: EmbellishmentRow[]): GroupStatus => {
   if (s.some((x) => x === 'resubmit')) return 'resubmit';
   if (s.length > 0 && s.every((x) => x === 'dropped')) return 'dropped';
   if (s.some((x) => x === 'hold') && s.every((x) => x === 'hold' || x === 'dropped')) return 'hold';
-  if (!anyCk && groupRows.some(hasStrikeOffSubmission)) return 'sent-pending';
+  if (!anyCk && groupRows.some((r) => getRowStatus(r) !== 'dropped' && hasStrikeOffSubmission(r))) {
+    return 'sent-pending';
+  }
   return 'pending';
 };
 
