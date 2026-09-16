@@ -168,6 +168,10 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
         const approvedRaw = String(r.col39 || "").trim();
         const approvedDateIso =
           approvedRaw || status !== "approved" ? null : verdict?.kind === "A" ? verdict.iso : null;
+        // col16 ("Alternative Fabric") is only filled in when the graphic was sent using an
+        // alternative fabric instead of the actual one — an empty col16 means it went out on
+        // the actual fabric, same signal the Dashboard's own Alternative Fabric column uses.
+        const alternativeFabricRaw = String(r.col16 || "").trim();
         return {
           row: r,
           status,
@@ -177,6 +181,8 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
           ground: String(r.col8 || "").trim(),
           category: categorySheetName(String(r.col3 || ""), String(r.col2 || "")),
           season: String(r.col4 || "").trim(),
+          fabricType: alternativeFabricRaw ? "Alternative" : "Actual",
+          alternativeFabricRaw,
           awrRaw: String(r.col26 || "").trim(),
           approvedRaw,
           approvedDateIso,
@@ -271,6 +277,7 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
     "Combo #",
     "Category",
     "Season",
+    "Fabric Type",
     "AWR Date",
     "1st S/Off Sent",
     "2nd S/Off Sent",
@@ -321,6 +328,7 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
           sr.combo,
           sr.category,
           sr.season,
+          sr.fabricType,
           sr.awrRaw ? formatDateDDMMYYYY(sr.awrRaw) || sr.awrRaw : "",
           sr.awb1DateIso ? formatDateDDMMYYYY(sr.awb1DateIso) : sr.awb1Raw,
           sr.awb2DateIso ? formatDateDDMMYYYY(sr.awb2DateIso) : sr.awb2Raw,
@@ -526,6 +534,7 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
                 <th className="px-4 py-3">Combo #</th>
                 <th className="px-4 py-3">Category</th>
                 <th className="px-4 py-3">Season</th>
+                <th className="px-4 py-3">Fabric Type</th>
                 <th className="px-4 py-3">AWR Date</th>
                 <th className="px-4 py-3">1st S/Off Sent</th>
                 <th className="px-4 py-3">2nd S/Off Sent</th>
@@ -554,6 +563,17 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
                   <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">{sr.combo || "—"}</td>
                   <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">{sr.category}</td>
                   <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">{sr.season || "—"}</td>
+                  <td className="px-4 py-3" title={sr.alternativeFabricRaw || undefined}>
+                    <span
+                      className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                        sr.fabricType === "Alternative"
+                          ? "bg-purple-500/10 text-purple-300 border-purple-500/30"
+                          : "bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                      }`}
+                    >
+                      {sr.fabricType}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
                     {sr.awrRaw ? formatDateDDMMYYYY(sr.awrRaw) || sr.awrRaw : "—"}
                   </td>
@@ -589,7 +609,7 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
               ))}
               {pageRows.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="px-4 py-10 text-center text-zinc-500 text-sm">
+                  <td colSpan={13} className="px-4 py-10 text-center text-zinc-500 text-sm">
                     No rows match the current filters.
                   </td>
                 </tr>
