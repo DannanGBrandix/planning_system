@@ -304,6 +304,40 @@ export function plantFromFlow(plantFlowRaw?: string | null): string {
 }
 
 /**
+ * Slices a shared PLANT FLOW (col12) down to a single "/"-split leg's own chain, for when that leg
+ * is replanned on its own (a per-plant Set Start Date, an Event Status Panel edit on one leg's
+ * "<date>_<leg>" cell, or a newly-added leg from import) — e.g. "REGAL IMAGE/HI EMB/LEEMA>>BFL
+ * WA01055>>REGAL IMAGE/HI EMB/LEEMA" sliced for "HI EMB" becomes "HI EMB>>BFL WA01055>>HI EMB".
+ * Each ">>"/"->"/"=>"/">"-separated stage that lists several "/"-parallel plants is narrowed to
+ * just this leg's own branch; a stage with no "/" (a dye/wash vendor like "BFL WA01055", or a
+ * single plant) is kept verbatim. Without this, callers used to blank col12 out entirely for a
+ * solo-leg replan, which also erased the dye-vendor name detectMatchingFlow's isDyeWashPlant looks
+ * for — silently downgrading that leg from the PPSDS->RDPS dye flow to the plain 1-plant flow.
+ * Confirmed against real data: GVU27-205 / 10356691, REGAL added as a new leg onto an existing
+ * "HI EMB/LEEMA >> BFL WA01055 >> HI EMB/LEEMA" row lost its dye planning entirely.
+ */
+export function legPlantFlow(plantFlowRaw: unknown, legPlant: string): string {
+  const raw = String(plantFlowRaw || "").trim();
+  const leg = String(legPlant || "").trim();
+  if (!raw || !leg) return "";
+  const legUpper = leg.toUpperCase();
+  const stages = raw
+    .split(/>>|->|=>|>/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const mineStages = stages.map((stage) => {
+    if (!stage.includes("/")) return stage;
+    const branches = stage.split("/").map((b) => b.trim()).filter(Boolean);
+    const mine = branches.find((b) => {
+      const u = b.toUpperCase();
+      return u === legUpper || u.includes(legUpper) || legUpper.includes(u);
+    });
+    return mine || stage;
+  });
+  return mineStages.join(">>");
+}
+
+/**
  * A cross-dev leg can itself be a "+"-combined location ("Antler+Leema") — one shared production
  * event that BOTH plants work at together. Return each individual canonical plant so both get
  * their own row; callers keep every one pointed at the same "<date>_<leg>" schedule key, so a

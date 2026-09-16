@@ -1201,6 +1201,18 @@ export function hasBuy(r: EmbellishmentRow): boolean {
   return String(r.col48 || '').trim().toUpperCase() === 'Y';
 }
 
+// Graphic Type (col19) values the business does NOT want inflating Advanced Analytics'
+// counts, charts, or tables — "branding" (logo/care-label brandings, not real graphic
+// developments) and "trial" (added 2026-09-15, same reasoning: not a production graphic).
+// Substring match, case-insensitive, so "TRIAL", "Trial Only", etc. all match. Every other
+// view (Dashboard, Table, Action Center, ...) keeps these rows — only Advanced Analytics
+// (and the DashboardStats tile that deliberately mirrors it, see below) drops them.
+const ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES = ["branding", "trial"];
+export function isExcludedFromAdvancedAnalytics(r: EmbellishmentRow): boolean {
+  const graphicType = String(r.col19 || "").toLowerCase();
+  return ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES.some((t) => graphicType.includes(t));
+}
+
 // col20 (Strike off Aesthetic Approval / Dropped) holds two very different kinds of content: an
 // actual verdict once one exists ("Approved", "Dropped", free-text comments...), or — before
 // that — just a scheduled AOQ *target* date ("2026-10-12") sitting there as a plain future

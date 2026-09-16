@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { EmbellishmentRow, getRowStatus, isRowSent, groupRowsByCombo, getGroupStatus } from "../lib/db";
+import { EmbellishmentRow, getRowStatus, isRowSent, groupRowsByCombo, getGroupStatus, isExcludedFromAdvancedAnalytics } from "../lib/db";
 import ComboListModal from "./ComboListModal";
 
 interface DashboardStatsProps {
@@ -34,15 +34,15 @@ export default function DashboardStats({ rows }: DashboardStatsProps) {
   // 5. Submission Pending — active combos whose strike-off has NOT gone to NY yet.
   //    Grouped into combos (Style|Graphic|Combo|Ground) and classified with the
   //    shared getGroupStatus so this equals the Advanced Analytics "Submission
-  //    Pending" tile for the same Category/Season filter (Advanced drops col19 =
-  //    "branding" rows — logo/care-label brandings, not graphic developments — so
-  //    match that here). VS/PINK: a combo counts only while it has no DHL number
+  //    Pending" tile for the same Category/Season filter (Advanced drops "branding"/
+  //    "trial" Graphic Type rows — see isExcludedFromAdvancedAnalytics — so match
+  //    that here). VS/PINK: a combo counts only while it has no DHL number
   //    and both Strike-Off Comment columns are blank; once sent (but not yet
   //    signed off) it moves to Comments Pending. CK: straight from its SP code.
   const submissionPendingCombos = useMemo(
     () =>
       groupRowsByCombo(
-        rows.filter((r) => !String(r.col19 || "").toLowerCase().includes("branding")),
+        rows.filter((r) => !isExcludedFromAdvancedAnalytics(r)),
       ).filter((g) => getGroupStatus(g) === "pending"),
     [rows],
   );

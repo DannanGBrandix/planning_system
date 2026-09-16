@@ -31,7 +31,7 @@ import RowDetailsModal from "./RowDetailsModal";
 import EventStatusPanel from "./EventStatusPanel";
 import HistoryModal from "./HistoryModal";
 import { parseEventValue } from "../lib/eventCodes";
-import { calculateTargetSendDate, parseCrossDevGroups } from "../lib/plantUtils";
+import { calculateTargetSendDate, parseCrossDevGroups, legPlantFlow } from "../lib/plantUtils";
 import { isSriLankaHoliday, getSriLankaHolidayName } from "../lib/sriLankaHolidays";
 import DailyEventsExport from "./DailyEventsExport";
 import EmbellishmentPlanExport from "./EmbellishmentPlanExport";
@@ -2399,7 +2399,11 @@ export default function Table({
 
             // Single-plant view of the row: this leg's own dated pills (or, while it still mirrors
             // the shared plan, the bare plan) mapped onto plain date keys, with the new value set.
-            const legBare: Record<string, unknown> = { ...row, col11: legPlant, col12: "" };
+            const legBare: Record<string, unknown> = {
+              ...row,
+              col11: legPlant,
+              col12: legPlantFlow(row.col12, legPlant),
+            };
             Object.keys(legBare).forEach(k => {
               if (/^\d{4}-\d{2}-\d{2}(_.*)?$/.test(k)) delete legBare[k];
             });

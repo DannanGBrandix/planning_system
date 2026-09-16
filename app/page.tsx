@@ -35,6 +35,7 @@ import {
   markCkChartsSynced,
   CkChartStatus,
   derivePlanStatus,
+  isExcludedFromAdvancedAnalytics,
 } from "./lib/db";
 import Table from "./components/Table";
 import ColumnConfigModal from "./components/ColumnConfigModal";
@@ -63,8 +64,8 @@ import EventStatusPanel from "./components/EventStatusPanel";
 import SlaWatchlistBar from "./components/SlaWatchlistBar";
 import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
-import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, continueStalledSchedule, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
-import { plantFromFlow } from "./lib/plantUtils";
+import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
+import { plantFromFlow, legPlantFlow } from "./lib/plantUtils";
 import { deriveNycVerdict } from "./lib/nycVerdict";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
 import { isHiddenEventTrigger } from "./lib/triggerUtils";
@@ -1343,7 +1344,11 @@ export default function Home() {
         // (not a stage of the combined chain), off a copy with every dated key stripped so it's a
         // fresh plan from the picked date. Then write it onto the leg's own suffixed keys only and
         // mark the leg diverged — the other legs + the shared plan are left alone.
-        const bareInput: Record<string, unknown> = { ...originalRow, col11: legPlant, col12: "" };
+        const bareInput: Record<string, unknown> = {
+          ...originalRow,
+          col11: legPlant,
+          col12: legPlantFlow(originalRow.col12, legPlant),
+        };
         Object.keys(bareInput).forEach((k) => {
           if (/^\d{4}-\d{2}-\d{2}(_.*)?$/.test(k)) delete bareInput[k];
         });
@@ -4343,11 +4348,10 @@ export default function Home() {
             // signal for "this row already carries its own actual planning dates from the file" —
             // trust those as-is and skip auto-scheduling entirely when they're present.
             //
-            // Beyond the plain "no dates at all" case, a row can also have SOME real dates that
-            // have simply gone stale — nothing recorded last month or this month, meaning the plan
-            // looks abandoned or stuck partway through. That case should resume from today for
-            // whichever steps haven't happened yet, rather than being left stuck at an old
-            // endpoint forever — see handleConfirmImport's use of continueStalledSchedule.
+            // A row that already has ANY real dates — however stale — is left completely alone by
+            // handleConfirmImport now: import must never invent, extend, or rewrite an existing
+            // plan (see the hasExistingEvents comment there). Only a genuinely blank row (no dates
+            // at all) is still auto-scheduled.
             //
             // Crucially, none of this can be decided per raw source row: the tracking chart often
             // has the SAME Graphic/Combo/Style/Ground on several rows (one per plant), which the intra-
@@ -4598,27 +4602,18 @@ export default function Home() {
         // Resolve the deferred auto-schedule decision now that every duplicate occurrence of
         // each item (e.g. one tracking-chart row per plant) has already been merged into one —
         // see the __needsAutoSchedule comment in processImportFile for why this can't happen any
-        // earlier. Four cases, checked on the FULLY MERGED item (not any one raw duplicate):
-        //   1. No real dates at all -> fresh auto-schedule from scratch (bare allocation chart).
-        //   2. This import is what just completed the item's allocation data (Plant/Process/
-        //      Application Form/Sign-off Requirement went from NOT all present to all present) ->
-        //      always run a fresh auto-schedule, regardless of how recent any existing date looks.
-        //      This is the deliberate trigger: uploading the allocation chart is what starts the
-        //      plan (from the next working day) — a leftover date from before the item had full
-        //      allocation data must not make that "look already active" and get skipped. Confirmed
-        //      as a real incident: an allocation-chart upload left several items with nothing but
-        //      their old pre-allocation FR date, because case 3 below judged them "already active."
-        //   3. Otherwise, real dates, most recent one is last month or this month -> plan already
-        //      had its allocation chart applied before now; trust it as-is, don't touch anything.
-        //   4. Otherwise, real dates, but the most recent is older than that -> plan looks stalled/
-        //      abandoned; resume from today for whichever steps haven't happened yet, without
-        //      touching or removing any of the real dates already there.
+        // earlier.
         //
-        // Independent of all four cases above: if this import just REASSIGNED an already-matched
-        // item's Ground (fabric color), Fabric Reference, or Plant (see __forceReplan in
-        // processImportFile) — an actual change from one real value to a different one, not
-        // filling a blank — the old plan no longer applies, even if some of its events are already
-        // colored pass/fail. Always re-run the scheduler in that case.
+        // A row that already carries ANY real planning event (bare or per-leg date key) is left
+        // completely untouched by import-triggered scheduling — no matter what else the file
+        // changed (Ground/Fabric/Plant reassignment, allocation data going from incomplete to
+        // complete, the plan looking stalled/abandoned). Only a genuinely blank row (no dates at
+        // all yet — nothing to lose) still gets a fresh auto-schedule below. This used to run four
+        // separate cases that could each rewrite or extend an already-planned row's dates —
+        // reported directly: "if we have planned any those are getting wiped and again getting
+        // new planning" on a tracking-chart re-import. __forceReplan (Ground/Fabric/Plant
+        // reassignment) is subject to the exact same rule now — it only actually fires below when
+        // the row had no dates to begin with.
         // The date the user picked in the import dialog ("" when they left it blank). Every
         // (re)schedule below starts from here instead of the next working day when it's set.
         const planStart = /^\d{4}-\d{2}-\d{2}$/.test(importPlanStartDate) ? importPlanStartDate : "";
@@ -4662,7 +4657,11 @@ export default function Home() {
               const esc = leg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
               const legRe = new RegExp(`^\\d{4}-\\d{2}-\\d{2}_${esc}$`, "i");
               // Fresh input: this leg as a lone plant, every dated key stripped.
-              const bareInput: Record<string, unknown> = { ...row, col11: leg, col12: "" };
+              const bareInput: Record<string, unknown> = {
+                ...row,
+                col11: leg,
+                col12: legPlantFlow(row.col12, leg),
+              };
               Object.keys(bareInput).forEach((k) => {
                 if (/^\d{4}-\d{2}-\d{2}(_.*)?$/.test(k)) delete bareInput[k];
               });
@@ -4685,32 +4684,17 @@ export default function Home() {
             return row as EmbellishmentRow;
           }
 
-          if (forceReplan) {
-            return autoScheduleEmbellishmentRow(row, undefined, planStart || undefined) as EmbellishmentRow;
-          }
-          if (!neededResolution) return row as EmbellishmentRow;
-
-          const dateKeys = Object.keys(row).filter(
-            (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && row[k]
+          // A row that already carries ANY real planning event (bare or per-leg date key) keeps
+          // it exactly as-is — never wiped, never extended, never replaced — regardless of
+          // forceReplan or neededResolution below. Only a genuinely blank row (no dates at all)
+          // still gets scheduled. See the comment above `planStart` for why.
+          const hasExistingEvents = Object.keys(row).some(
+            (k) => /^\d{4}-\d{2}-\d{2}(_.+)?$/.test(k) && String(row[k] ?? "").trim() !== "",
           );
-          if (dateKeys.length === 0) {
-            return autoScheduleEmbellishmentRow(row, undefined, planStart || undefined) as EmbellishmentRow;
-          }
+          if (hasExistingEvents) return row as EmbellishmentRow;
 
-          const originalRow = rows.find((old) => old.id === r.id);
-          const allocationJustCompleted =
-            hasCompleteAllocationContext(row) &&
-            (!originalRow || !hasCompleteAllocationContext(originalRow as unknown as Record<string, unknown>));
-          if (allocationJustCompleted) {
+          if (forceReplan || neededResolution) {
             return autoScheduleEmbellishmentRow(row, undefined, planStart || undefined) as EmbellishmentRow;
-          }
-
-          const latestDate = new Date(dateKeys.sort().pop()!);
-          const now = new Date();
-          const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-          if (latestDate < startOfLastMonth) {
-            const todayISO = now.toISOString().split("T")[0];
-            return continueStalledSchedule(row, planStart || todayISO) as EmbellishmentRow;
           }
           return row as EmbellishmentRow;
         });
@@ -5250,15 +5234,13 @@ export default function Home() {
     [displayedRows],
   );
 
-  // Advanced Analytics deliberately drops rows whose Graphic Type (col19) is "branding" —
-  // those are logo/care-label brandings, not real graphic developments, and the business
-  // doesn't want them inflating any of the Advanced Analytics counts, charts, or tables.
-  // Every other view keeps them.
+  // Advanced Analytics deliberately drops rows whose Graphic Type (col19) is "branding" or
+  // "trial" — brandings (logo/care-label) aren't real graphic developments, and trials aren't
+  // production graphics either, so the business doesn't want either inflating any of the
+  // Advanced Analytics counts, charts, or tables. Every other view keeps them.
   const advancedAnalyticsRows = useMemo(
     () =>
-      currentVersionRows.filter(
-        (r) => !String(r.col19 || "").toLowerCase().includes("branding"),
-      ),
+      currentVersionRows.filter((r) => !isExcludedFromAdvancedAnalytics(r)),
     [currentVersionRows],
   );
 
@@ -5271,9 +5253,7 @@ export default function Home() {
   const advancedFilterOptionRows = useMemo(
     () =>
       rows.filter(
-        (r) =>
-          r.is_current !== false &&
-          !String(r.col19 || "").toLowerCase().includes("branding"),
+        (r) => r.is_current !== false && !isExcludedFromAdvancedAnalytics(r),
       ),
     [rows],
   );
