@@ -1,9 +1,12 @@
 "use client";
-import React, { useMemo, useState } from "react";
-import { EmbellishmentRow, getRowStatus } from "../lib/db";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  EmbellishmentRow, getRowStatus, getSeasonAoqConfig, SeasonAoqMap,
+  getPlantAliasConfig, savePlantAliasConfig, PlantAliasConfig,
+} from "../lib/db";
 import { parseEventValue } from "../lib/eventCodes";
-import { extractPlants } from "../lib/plantUtils";
-import { extractValidDate, formatDateDDMMYYYY } from "../lib/triggerUtils";
+import { extractPlants, applyPlantAliasConfig } from "../lib/plantUtils";
+import { extractValidDate, formatDateDDMMYYYY, seasonAoqKey } from "../lib/triggerUtils";
 import {
   parseTriggerMD, nearestYearIso, rowRefIso, readNycVerdict, deriveNycVerdict, markNycVerdict,
 } from "../lib/nycVerdict";
@@ -15,6 +18,7 @@ import {
 interface PlantPerformanceDashboardProps {
   rows: EmbellishmentRow[];
   onUpdateRow: (row: EmbellishmentRow) => void | Promise<void>;
+  currentRole?: string;
 }
 
 // ── palette ────────────────────────────────────────────────────────────────
@@ -67,15 +71,21 @@ function dateEntriesOf(row: EmbellishmentRow): [string, string][] {
 
 // AOQ deadline for a row: a real date in col20, else the trigger's own month/day code
 // (parseTriggerMD + year resolved from the row's own events, nearestYearIso — both in
-// app/lib/nycVerdict.ts). Multiple dates on one trigger -> the latest.
-function getRowAoqIso(row: EmbellishmentRow): string | null {
+// app/lib/nycVerdict.ts), else the row's Category+Season AOQ date set on the Trigger Manager
+// page (a Trigger like "KNIT" / "COMPLETE" / "RECEIVE" names a process stage, not a deadline, so
+// it never parses as an M.D code — PINK/VS/CK each still need a season deadline to score
+// against). Multiple dates on one trigger -> the latest.
+function getRowAoqIso(row: EmbellishmentRow, seasonAoqMap: SeasonAoqMap): string | null {
   const col20 = extractValidDate(row.col20);
   if (col20) return col20;
   const mds = parseTriggerMD(String(row.col2 || ""));
-  if (!mds.length) return null;
-  const ref = rowRefIso(row as unknown as Record<string, unknown>);
-  const isos = mds.map(([m, d]) => nearestYearIso(m, d, ref)).filter(Boolean).sort();
-  return isos[isos.length - 1] || null;
+  if (mds.length) {
+    const ref = rowRefIso(row as unknown as Record<string, unknown>);
+    const isos = mds.map(([m, d]) => nearestYearIso(m, d, ref)).filter(Boolean).sort();
+    if (isos.length) return isos[isos.length - 1];
+  }
+  const seasonDate = seasonAoqMap[seasonAoqKey(row.col3, seasonBase(row.col4))];
+  return seasonDate ? extractValidDate(seasonDate) : null;
 }
 
 type Verdict = "onTime" | "late" | "rejected" | "pending" | "unscored";
@@ -120,7 +130,8 @@ interface PlantAgg {
   graphics: GraphicPerf[];
 }
 
-export default function PlantPerformanceDashboard({ rows, onUpdateRow }: PlantPerformanceDashboardProps) {
+export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRole }: PlantPerformanceDashboardProps) {
+  const canManagePlants = currentRole === "Planner" || currentRole === "Management";
   const [season, setSeason] = useState<string>("all");
   const [category, setCategory] = useState<string>("all");
   const [groupByCategory, setGroupByCategory] = useState(false);
@@ -132,6 +143,107 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow }: PlantPe
   const [useFallback, setUseFallback] = useState(true);
   const [busy, setBusy] = useState<{ label: string; done: number; total: number } | null>(null);
   const [verdictDate, setVerdictDate] = useState<Record<string, string>>({});
+  // Category+Season AOQ fallback (set on the Trigger Manager page) — used only when a row's own
+  // Trigger carries no date (col20 blank and the trigger text isn't an M.D code).
+  const [seasonAoqMap, setSeasonAoqMap] = useState<SeasonAoqMap>({});
+
+  useEffect(() => {
+    getSeasonAoqConfig().then(setSeasonAoqMap).catch(() => {});
+  }, []);
+
+  // Plant aliases (merge two plant spellings) / exclusions (hide a bogus plant) — applied as a
+  // normalization layer in plantUtils so extractPlants() picks them up everywhere, without ever
+  // touching the raw col11/col12 text on a row. `aliasVersion` exists only to force `analysis`
+  // to recompute after a save, since applyPlantAliasConfig mutates module-level state that
+  // useMemo can't see in its dependency array on its own.
+  const [plantAliasConfig, setPlantAliasConfig] = useState<PlantAliasConfig>({ aliases: {}, excluded: [] });
+  const [aliasVersion, setAliasVersion] = useState(0);
+  const [selectedPlants, setSelectedPlants] = useState<Set<string>>(new Set());
+  const [plantMergePanelOpen, setPlantMergePanelOpen] = useState(false);
+  const [plantMergeTarget, setPlantMergeTarget] = useState<string>("");
+  const [plantMergeCustomName, setPlantMergeCustomName] = useState("");
+  const [plantBusy, setPlantBusy] = useState(false);
+
+  useEffect(() => {
+    getPlantAliasConfig().then((cfg) => {
+      applyPlantAliasConfig(cfg);
+      setPlantAliasConfig(cfg);
+      setAliasVersion((v) => v + 1);
+    }).catch(() => {});
+  }, []);
+
+  const togglePlantSelected = (plant: string) => {
+    setSelectedPlants((prev) => {
+      const next = new Set(prev);
+      if (next.has(plant)) next.delete(plant);
+      else next.add(plant);
+      return next;
+    });
+  };
+
+  const handleDeletePlant = async (plant: string) => {
+    if (!canManagePlants || plantBusy || plant === "(unassigned)") return;
+    const ok = window.confirm(
+      `Hide plant "${plant}"?\n\nIt will no longer appear anywhere plants are grouped (Plant Performance, Plant Schedules, Fabric Dispatch). Row data (col11/col12) is untouched — this can be undone from here later.`,
+    );
+    if (!ok) return;
+    setPlantBusy(true);
+    try {
+      const next: PlantAliasConfig = {
+        aliases: plantAliasConfig.aliases,
+        excluded: Array.from(new Set([...plantAliasConfig.excluded, plant])),
+      };
+      await savePlantAliasConfig(next);
+      applyPlantAliasConfig(next);
+      setPlantAliasConfig(next);
+      setAliasVersion((v) => v + 1);
+      setSelectedPlants((prev) => {
+        const s = new Set(prev);
+        s.delete(plant);
+        return s;
+      });
+      if (selectedPlant === plant) setSelectedPlant(null);
+    } finally {
+      setPlantBusy(false);
+    }
+  };
+
+  const openPlantMergePanel = () => {
+    if (selectedPlants.size < 2) return;
+    setPlantMergeTarget(Array.from(selectedPlants).sort()[0]);
+    setPlantMergeCustomName("");
+    setPlantMergePanelOpen(true);
+  };
+
+  const confirmPlantMerge = async () => {
+    if (plantBusy) return;
+    const finalName = (plantMergeCustomName.trim() || plantMergeTarget).toUpperCase();
+    if (!finalName) return;
+    const sources = Array.from(selectedPlants).filter((p) => p.toUpperCase() !== finalName);
+    if (sources.length === 0) {
+      setPlantMergePanelOpen(false);
+      return;
+    }
+    const ok = window.confirm(
+      `Merge ${selectedPlants.size} plants into "${finalName}"?\n\nEverywhere plants are grouped will show these as one plant from now on. Row data (col11/col12) is untouched.`,
+    );
+    if (!ok) return;
+    setPlantBusy(true);
+    try {
+      const aliases = { ...plantAliasConfig.aliases };
+      sources.forEach((p) => { aliases[p] = finalName; });
+      const next: PlantAliasConfig = { aliases, excluded: plantAliasConfig.excluded };
+      await savePlantAliasConfig(next);
+      applyPlantAliasConfig(next);
+      setPlantAliasConfig(next);
+      setAliasVersion((v) => v + 1);
+      setSelectedPlants(new Set());
+      setPlantMergePanelOpen(false);
+      setPlantMergeCustomName("");
+    } finally {
+      setPlantBusy(false);
+    }
+  };
 
   const seasonOptions = useMemo(() => {
     const s = new Set<string>();
@@ -207,7 +319,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow }: PlantPe
         if (st === "approved") anyApprovedStatus = true;
         if (st === "resubmit") anyResubmitStatus = true;
 
-        const rowAoq = getRowAoqIso(r);
+        const rowAoq = getRowAoqIso(r, seasonAoqMap);
         if (rowAoq && (!aoqIso || rowAoq > aoqIso)) aoqIso = rowAoq; // latest wins = lenient
 
         dateEntriesOf(r).forEach(([iso, val]) => {
@@ -350,7 +462,10 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow }: PlantPe
       .sort((a, b) => b.graphics - a.graphics);
 
     return { graphics, plantAggs, totals, overallRate, triggerRows };
-  }, [rows, season, category, groupByCategory, graceDays, useFallback]);
+    // aliasVersion isn't read directly — it just forces a recompute after a plant merge/hide,
+    // since extractPlants() reads RUNTIME_PLANT_ALIASES from module state useMemo can't see.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, season, category, groupByCategory, graceDays, useFallback, seasonAoqMap, aliasVersion]);
 
   // Materialise every row's NY verdict (nycv: keys) from its strike-off comments in one pass.
   const handleRecompute = async () => {
@@ -682,14 +797,82 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow }: PlantPe
 
         {/* plant table */}
         <div className="bg-[#0f1115] border border-zinc-800 rounded-2xl overflow-hidden">
-          <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
-            <h2 className="font-black text-base">Plant breakdown</h2>
-            <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Click a plant for its graphics</span>
+          <div className="px-5 py-4 border-b border-zinc-800 flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <h2 className="font-black text-base">Plant breakdown</h2>
+              <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Click a plant for its graphics</span>
+            </div>
+            {canManagePlants && selectedPlants.size > 0 && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded-xl">
+                <span className="text-xs font-semibold text-amber-300">{selectedPlants.size} plant{selectedPlants.size === 1 ? "" : "s"} selected</span>
+                <button
+                  onClick={() => setSelectedPlants(new Set())}
+                  disabled={plantBusy}
+                  className="px-2 py-1 text-[11px] font-semibold text-zinc-300 hover:text-white disabled:opacity-40 rounded-lg"
+                >
+                  Clear
+                </button>
+                <button
+                  onClick={openPlantMergePanel}
+                  disabled={selectedPlants.size < 2 || plantBusy}
+                  className="px-3 py-1 text-[11px] font-bold text-black bg-amber-400 hover:bg-amber-300 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg"
+                  title={selectedPlants.size < 2 ? "Select at least 2 plants to merge" : "Merge the selected plants into one"}
+                >
+                  Merge Selected
+                </button>
+              </div>
+            )}
           </div>
+
+          {canManagePlants && plantMergePanelOpen && (
+            <div className="m-4 p-4 bg-zinc-950 border border-amber-500/40 rounded-xl">
+              <h3 className="text-sm font-bold text-white mb-1">Merge {selectedPlants.size} plants into one</h3>
+              <p className="text-xs text-zinc-500 mb-3">
+                Every graphic currently grouped under any of the plants below will show up under the name you pick,
+                everywhere plants are grouped (Plant Performance, Plant Schedules, Fabric Dispatch). Row data
+                (col11/col12) is left exactly as-is.
+              </p>
+              <div className="flex flex-col gap-1.5 mb-3">
+                {Array.from(selectedPlants).sort().map((p) => (
+                  <label key={p} className="flex items-center gap-2 px-3 py-2 bg-zinc-900/60 border border-zinc-800 rounded-lg cursor-pointer hover:border-zinc-700">
+                    <input
+                      type="radio"
+                      name="plantMergeTarget"
+                      checked={!plantMergeCustomName && plantMergeTarget === p}
+                      onChange={() => { setPlantMergeTarget(p); setPlantMergeCustomName(""); }}
+                    />
+                    <span className="text-sm text-white font-semibold">{p}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 mb-4">
+                <span className="text-xs text-zinc-500 shrink-0">Or a new name:</span>
+                <input
+                  type="text"
+                  value={plantMergeCustomName}
+                  onChange={(e) => setPlantMergeCustomName(e.target.value)}
+                  placeholder="e.g. ANTLER"
+                  className="flex-1 px-3 py-1.5 text-sm bg-zinc-950 border border-zinc-800 rounded-lg text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500/50"
+                />
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <button onClick={() => setPlantMergePanelOpen(false)} disabled={plantBusy}
+                  className="px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:text-white disabled:opacity-40 rounded-lg">
+                  Cancel
+                </button>
+                <button onClick={confirmPlantMerge} disabled={plantBusy}
+                  className="px-4 py-1.5 text-xs font-bold text-black bg-amber-400 hover:bg-amber-300 disabled:opacity-40 rounded-lg">
+                  {plantBusy ? "Merging…" : `Merge into "${plantMergeCustomName.trim() || plantMergeTarget}"`}
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-[10px] uppercase tracking-widest text-zinc-500 border-b border-zinc-800/60 bg-zinc-900/40">
+                  {canManagePlants && <th className="w-8 px-3 py-3" />}
                   <th className="text-left px-5 py-3 font-black">Plant</th>
                   {groupByCategory && <th className="text-left px-3 py-3 font-black">Category</th>}
                   <th className="text-center px-3 py-3 font-black">Allocated</th>
@@ -701,15 +884,30 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow }: PlantPe
                   <th className="text-center px-3 py-3 font-black">No AOQ</th>
                   <th className="text-center px-3 py-3 font-black">Score %</th>
                   <th className="text-center px-3 py-3 font-black" title="on-time × 40 − (late + rejected) × 60">Net</th>
+                  {canManagePlants && <th className="w-10 px-3 py-3" />}
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/40">
                 {sortedAggs.length === 0 ? (
                   <tr><td colSpan={groupByCategory ? 11 : 10} className="px-5 py-10 text-center text-zinc-500">No graphics match this filter.</td></tr>
-                ) : sortedAggs.map((a) => (
+                ) : sortedAggs.map((a) => {
+                  const isRealPlant = a.plant !== "(unassigned)";
+                  return (
                   <tr key={a.key}
                     onClick={() => setSelectedPlant(selectedPlant === a.plant ? null : a.plant)}
                     className={`cursor-pointer transition-all hover:bg-zinc-800/40 ${selectedPlant === a.plant ? "bg-amber-950/30 border-l-2 border-l-amber-500" : ""}`}>
+                    {canManagePlants && (
+                      <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                        {isRealPlant && (
+                          <input
+                            type="checkbox"
+                            checked={selectedPlants.has(a.plant)}
+                            onChange={() => togglePlantSelected(a.plant)}
+                            disabled={plantBusy}
+                          />
+                        )}
+                      </td>
+                    )}
                     <td className="px-5 py-3 font-bold text-zinc-100 text-xs">{a.plant}</td>
                     {groupByCategory && <td className="px-3 py-3 text-zinc-400 text-xs">{a.category}</td>}
                     <td className="px-3 py-3 text-center text-zinc-200 font-bold text-xs">{a.allocated}</td>
@@ -728,18 +926,96 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow }: PlantPe
                       </div>
                     </td>
                     <td className={`px-3 py-3 text-center font-bold text-xs ${a.netScore >= 0 ? "text-emerald-400" : "text-red-400"}`}>{a.netScore}</td>
+                    {canManagePlants && (
+                      <td className="px-3 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                        {isRealPlant && (
+                          <button
+                            onClick={() => handleDeletePlant(a.plant)}
+                            disabled={plantBusy}
+                            className="p-1 text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 disabled:opacity-40 rounded-md transition-colors"
+                            title="Hide this plant (excludes it from every plant grouping; row data untouched)"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
+
+          {canManagePlants && Object.keys(plantAliasConfig.aliases).length > 0 && (
+            <div className="px-5 py-3 border-t border-zinc-800 flex items-center flex-wrap gap-2">
+              <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Merged plants:</span>
+              {Object.entries(plantAliasConfig.aliases).map(([from, to]) => (
+                <button
+                  key={from}
+                  disabled={plantBusy}
+                  onClick={async () => {
+                    setPlantBusy(true);
+                    try {
+                      const aliases = { ...plantAliasConfig.aliases };
+                      delete aliases[from];
+                      const next: PlantAliasConfig = { aliases, excluded: plantAliasConfig.excluded };
+                      await savePlantAliasConfig(next);
+                      applyPlantAliasConfig(next);
+                      setPlantAliasConfig(next);
+                      setAliasVersion((v) => v + 1);
+                    } finally {
+                      setPlantBusy(false);
+                    }
+                  }}
+                  className="px-2 py-1 text-[11px] font-semibold text-zinc-400 bg-zinc-900 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-500 disabled:opacity-40"
+                  title="Click to undo this merge"
+                >
+                  {from} → {to} ↺
+                </button>
+              ))}
+            </div>
+          )}
+
+          {canManagePlants && plantAliasConfig.excluded.length > 0 && (
+            <div className="px-5 py-3 border-t border-zinc-800 flex items-center flex-wrap gap-2">
+              <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Hidden plants:</span>
+              {plantAliasConfig.excluded.map((p) => (
+                <button
+                  key={p}
+                  disabled={plantBusy}
+                  onClick={async () => {
+                    setPlantBusy(true);
+                    try {
+                      const next: PlantAliasConfig = {
+                        aliases: plantAliasConfig.aliases,
+                        excluded: plantAliasConfig.excluded.filter((x) => x !== p),
+                      };
+                      await savePlantAliasConfig(next);
+                      applyPlantAliasConfig(next);
+                      setPlantAliasConfig(next);
+                      setAliasVersion((v) => v + 1);
+                    } finally {
+                      setPlantBusy(false);
+                    }
+                  }}
+                  className="px-2 py-1 text-[11px] font-semibold text-zinc-400 bg-zinc-900 border border-zinc-700 rounded-lg hover:text-white hover:border-zinc-500 disabled:opacity-40"
+                  title="Click to restore this plant"
+                >
+                  {p} ↺
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* trigger / AOQ table */}
         <div className="bg-[#0f1115] border border-zinc-800 rounded-2xl overflow-hidden">
           <div className="px-5 py-4 border-b border-zinc-800">
             <h2 className="font-black text-base">Triggers &amp; AOQ dates</h2>
-            <p className="text-[10px] text-zinc-500 mt-0.5">The deadline each graphic is scored against (col20 date, else the trigger&apos;s own M.D code)</p>
+            <p className="text-[10px] text-zinc-500 mt-0.5">The deadline each graphic is scored against (col20 date, else the trigger&apos;s own M.D code, else the Category+Season AOQ date set on Trigger Manager)</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

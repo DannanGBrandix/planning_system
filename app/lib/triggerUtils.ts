@@ -107,3 +107,11 @@ export function isValidTriggerValue(s: unknown): boolean {
   const upper = str.toUpperCase();
   return upper !== "N/A" && upper !== "-";
 }
+
+// Key format shared by the Trigger Manager's "Season AOQ Dates" table and Plant Performance's
+// AOQ fallback lookup (SeasonAoqMap from app/lib/db.ts) — a Trigger with no date of its own
+// (col20 blank, text doesn't parse as an M.D code) falls back to its Category+Season deadline,
+// since PINK/VS/CK each run their own AOQ calendar even within the same season.
+export function seasonAoqKey(category: unknown, season: unknown): string {
+  return `${String(category || "").trim().toUpperCase()}|||${String(season || "").trim().toUpperCase()}`;
+}

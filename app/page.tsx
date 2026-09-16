@@ -60,13 +60,15 @@ import PlantPerformanceDashboard from "./components/PlantPerformanceDashboard";
 import FabricDispatchView from "./components/FabricDispatchView";
 import TriggerManagementView from "./components/TriggerManagementView";
 import ReportsView from "./components/ReportsView";
+import SummaryOfGraphicsView from "./components/SummaryOfGraphicsView";
 import EventStatusPanel from "./components/EventStatusPanel";
 import SlaWatchlistBar from "./components/SlaWatchlistBar";
 import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
 import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
 import { plantFromFlow, legPlantFlow } from "./lib/plantUtils";
-import { deriveNycVerdict } from "./lib/nycVerdict";
+import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
+import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
 import { isHiddenEventTrigger } from "./lib/triggerUtils";
 import {
@@ -125,7 +127,7 @@ export default function Home() {
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [isDueTomorrowAlertOpen, setIsDueTomorrowAlertOpen] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<
-    "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports"
+    "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics"
   >("standard");
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
     useState<string>("");
@@ -3014,9 +3016,15 @@ export default function Home() {
               }
             }
 
-            // Strike-Off AWB tracking details: 2nd submission wins over 1st submission
+            // Strike-Off AWB tracking details: 2nd submission wins over 1st submission for col24
+            // (the single "current" tracking value everything else reads), but the 1st and 2nd are
+            // ALSO kept separately in awb1/awb2 (non-col* keys persist via the schedule JSONB, same
+            // as "nycv:<date>" keys) so Summary of Graphics can show both S/Off dates side by side
+            // instead of just whichever one last overwrote col24.
             const awb2 = String(row["__awb2"] || "").trim();
             const awb1 = String(row["__awb1"] || "").trim();
+            if (awb1) formattedRow["awb1"] = awb1;
+            if (awb2) formattedRow["awb2"] = awb2;
             const latestAwb = awb2 || awb1;
             if (latestAwb) {
               formattedRow["col24"] = latestAwb;
@@ -4411,6 +4419,45 @@ export default function Home() {
               finalRow.col41 = hasColorApproval(finalRow) ? "Y" : "N";
             }
 
+            // Auto-derive Approved Date (col39) the same way, from the NY verdict just derived
+            // above — so a fresh import needs no separate "Sync Approved Dates" click on the
+            // Summary of Graphics page either. Only fires when col39 is blank, so an explicit
+            // Approve Date (already on the row, or supplied by this import file's own "Approve
+            // Date"/"Approval Date" column) always wins over a comment-derived guess. Also gated
+            // to getRowStatus === "approved": parseCommentVerdict skips any line that also
+            // mentions a drop, so a graphic approved and LATER dropped (a newer "...DROP" line
+            // appended above the older "...APPROVED LAYOUT/TECH/EX" one) would otherwise still
+            // get a stamped Approve Date despite col1/col20 already saying Dropped.
+            if (
+              !String(finalRow.col39 || "").trim() &&
+              getRowStatus(finalRow) === "approved"
+            ) {
+              const approvalVerdict = readNycVerdict(finalRow);
+              if (approvalVerdict?.kind === "A") {
+                finalRow.col39 = approvalVerdict.iso;
+              }
+            }
+
+            // Resolve the 1st/2nd S/Off Sent dates and the Drop date the same way, right here at
+            // import time, so Summary of Graphics reads them straight off the row instead of
+            // re-parsing awb1/awb2/comments on every page load. Computed on finalRow (post-merge)
+            // so year-disambiguation (nearestYearIso) sees the row's full accumulated schedule,
+            // not just this one sheet row. Never overwrites a value already resolved by an earlier
+            // import — only fills in what's still blank.
+            const importRefIso = rowRefIso(finalRow);
+            if (!String(finalRow.awb1Date || "").trim()) {
+              const iso = extractDateFromTrackingText(finalRow.awb1, importRefIso);
+              if (iso) finalRow.awb1Date = iso;
+            }
+            if (!String(finalRow.awb2Date || "").trim()) {
+              const iso = extractDateFromTrackingText(finalRow.awb2, importRefIso);
+              if (iso) finalRow.awb2Date = iso;
+            }
+            if (!String(finalRow.dropDate || "").trim() && getRowStatus(finalRow) === "dropped") {
+              const iso = extractDropDateIso(finalRow);
+              if (iso) finalRow.dropDate = iso;
+            }
+
             // A matched item whose Ground (fabric color), Fabric Reference, or Plant just got
             // REASSIGNED by this import — not filled in for the first time, an actual change from
             // one real value to a different real one — needs its plan redone from scratch, even if
@@ -5349,10 +5396,16 @@ export default function Home() {
                 : viewMode === "fabricDispatch"
                   ? "Fabric Dispatch"
                   : viewMode === "triggers"
-                    ? "Trigger Manager"
+                    ? "Season AOQ Dates"
                     : viewMode === "reports"
                       ? "Reports"
-                      : "Action Center"
+                      : viewMode === "summaryOfGraphics"
+                        ? "TNA Report"
+                        : viewMode === "plantPerformance"
+                          ? "Plant Performance"
+                          : viewMode === "plantSchedules"
+                            ? "Plant Schedules"
+                            : "Action Center"
           }
           subtitle={
             viewMode === "standard"
@@ -5362,10 +5415,16 @@ export default function Home() {
                 : viewMode === "fabricDispatch"
                   ? "Manage and export fabric requirements for dispatch."
                   : viewMode === "triggers"
-                    ? "View, delete, and merge Trigger tags across all items."
+                    ? "Set the AOQ fallback deadline per Category + Season."
                     : viewMode === "reports"
                       ? "Export approval reports by Season and Category."
-                      : "Quickly resolve missing data for new imports."
+                      : viewMode === "summaryOfGraphics"
+                        ? "AWR, S/Off, Approved, and Dropped dates by Category and Season — exportable to Excel."
+                        : viewMode === "plantPerformance"
+                          ? "AOQ-approval performance by plant — click a plant to merge, hide, or see its graphics."
+                          : viewMode === "plantSchedules"
+                            ? "Per-plant calendar of upcoming planning events."
+                            : "Quickly resolve missing data for new imports."
           }
         />
 
@@ -5378,7 +5437,7 @@ export default function Home() {
               currentRole={currentRole}
             />
           ) : viewMode === "plantPerformance" ? (
-            <PlantPerformanceDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} />
+            <PlantPerformanceDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
           ) : viewMode === "plantSchedules" ? (
             <PlantSchedulesView rows={currentVersionRows} />
           ) : viewMode === "fabricDispatch" ? (
@@ -5387,6 +5446,8 @@ export default function Home() {
             <TriggerManagementView rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
           ) : viewMode === "reports" ? (
             <ReportsView rows={allCurrentVersionRows} />
+          ) : viewMode === "summaryOfGraphics" ? (
+            <SummaryOfGraphicsView rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} />
           ) : viewMode === "advanced" ? (
             <div className="flex min-h-[calc(100vh-140px)] w-full mt-4">
               <AdvancedSidebarFilters

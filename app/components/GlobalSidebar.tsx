@@ -1,8 +1,8 @@
 import React from 'react';
 
 interface GlobalSidebarProps {
-  currentView: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports";
-  setViewMode: (mode: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports") => void;
+  currentView: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics";
+  setViewMode: (mode: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics") => void;
   onImportJSON: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportExcel: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportPlanningSheet: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -88,7 +88,7 @@ export default function GlobalSidebar({
     },
     {
       id: "triggers",
-      label: "Trigger Manager",
+      label: "Season AOQ Dates",
       icon: (
         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5.586a1 1 0 01.707.293l7.414 7.414a1 1 0 010 1.414l-7.586 7.586a1 1 0 01-1.414 0L4.293 12.293A1 1 0 014 11.586V5a2 2 0 012-2z" />
@@ -101,6 +101,15 @@ export default function GlobalSidebar({
       icon: (
         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2a2 2 0 012-2h2a2 2 0 012 2v2m-8 0h8m-8 0a2 2 0 01-2-2V7a2 2 0 012-2h2.586a1 1 0 01.707.293l1.414 1.414a1 1 0 00.707.293H17a2 2 0 012 2v8a2 2 0 01-2 2m-8 0h8" />
+        </svg>
+      )
+    },
+    {
+      id: "summaryOfGraphics",
+      label: "TNA Report",
+      icon: (
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h10M4 18h7m6-3l3 3m0 0l-3 3m3-3H15" />
         </svg>
       )
     }
@@ -131,7 +140,7 @@ export default function GlobalSidebar({
                 return (
                   <button
                     key={item.id}
-                    onClick={() => setViewMode(item.id as "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports")}
+                    onClick={() => setViewMode(item.id as "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics")}
                     suppressHydrationWarning
                     className={`flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-semibold transition-all w-full text-left ${
                       isActive 

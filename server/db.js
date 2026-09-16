@@ -204,6 +204,9 @@ let inMemoryLogs = [];
 let inMemoryColumns = { ...DEFAULT_COLUMNS };
 let inMemoryBackups = [];
 let inMemoryPendingUpdates = [];
+let inMemorySeasonAoq = {};
+let inMemoryPlantAliases = { aliases: {}, excluded: [] };
+let inMemoryTriggerCatalog = [];
 
 // Keep only the most recent N backups so storage doesn't grow forever
 const MAX_BACKUPS = 20;
@@ -595,6 +598,114 @@ module.exports = {
       if (error) throw error;
     } else {
       inMemoryColumns = { ...cols };
+    }
+  },
+
+  // Season AOQ dates — { "<CATEGORY>|||<SEASON>": "YYYY-MM-DD" }. Fallback deadline used by
+  // Plant Performance when a row's Trigger has no date of its own (col20 blank and the trigger
+  // text doesn't parse as an M.D code).
+  //
+  // Stored as its own row (id "season_aoq") in the existing columns_config table rather than a
+  // dedicated season_aoq_config table: that table's CREATE TABLE statement was added to
+  // supabase.sql but never actually run against production, so every save silently no-opped
+  // (PGRST205 "table not found in schema cache") while the UI looked like it worked. Reusing
+  // columns_config — already present and already a generic {id, config jsonb} singleton store —
+  // sidesteps needing a manual Supabase migration. See also getPlantAliases/savePlantAliases below.
+  async getSeasonAoq() {
+    await ensureDb();
+    if (useSupabase && supabase) {
+      const { data, error } = await supabase
+        .from("columns_config")
+        .select("config")
+        .eq("id", "season_aoq")
+        .single();
+      if (!error && data?.config) return data.config;
+      return {};
+    }
+    return { ...inMemorySeasonAoq };
+  },
+
+  async saveSeasonAoq(map) {
+    await ensureDb();
+    if (useSupabase && supabase) {
+      const { error } = await supabase
+        .from("columns_config")
+        .upsert({ id: "season_aoq", config: map });
+      if (error) throw error;
+    } else {
+      inMemorySeasonAoq = { ...map };
+    }
+  },
+
+  // Plant aliases — { aliases: { "<RAW>": "<TARGET>" }, excluded: ["<PLANT>", ...] }. Lets a
+  // planner merge two plant spellings or hide a bogus one without rewriting the raw col11/col12
+  // text on every row; applied as a normalization layer in app/lib/plantUtils.ts.
+  //
+  // Stored as its own row (id "plant_aliases") in columns_config for the same reason as
+  // getSeasonAoq above — plant_aliases_config was never actually created in production, which is
+  // why the Plant Performance "Hide"/"Merge" buttons looked like they worked but didn't persist.
+  async getPlantAliases() {
+    await ensureDb();
+    if (useSupabase && supabase) {
+      const { data, error } = await supabase
+        .from("columns_config")
+        .select("config")
+        .eq("id", "plant_aliases")
+        .single();
+      if (!error && data?.config) return data.config;
+      return { aliases: {}, excluded: [] };
+    }
+    return {
+      aliases: { ...inMemoryPlantAliases.aliases },
+      excluded: [...inMemoryPlantAliases.excluded],
+    };
+  },
+
+  async savePlantAliases(config) {
+    await ensureDb();
+    const safe = {
+      aliases: config?.aliases && typeof config.aliases === "object" ? config.aliases : {},
+      excluded: Array.isArray(config?.excluded) ? config.excluded : [],
+    };
+    if (useSupabase && supabase) {
+      const { error } = await supabase
+        .from("columns_config")
+        .upsert({ id: "plant_aliases", config: safe });
+      if (error) throw error;
+    } else {
+      inMemoryPlantAliases = safe;
+    }
+  },
+
+  // Trigger catalog — planner-defined Triggers, each carrying its own AOQ date and the
+  // Category+Season it belongs to. Lets col2 (Trigger) be picked from a known list instead of
+  // freehand-typed on every row, and the picked entry's AOQ date can be applied to col20
+  // automatically (see the autocomplete in app/components/Table.tsx). Stored the same way as
+  // season_aoq / plant_aliases above — a row in columns_config, not its own table.
+  async getTriggerCatalog() {
+    await ensureDb();
+    if (useSupabase && supabase) {
+      const { data, error } = await supabase
+        .from("columns_config")
+        .select("config")
+        .eq("id", "trigger_catalog")
+        .single();
+      if (!error && Array.isArray(data?.config?.triggers)) return data.config.triggers;
+      return [];
+    }
+    return [...inMemoryTriggerCatalog];
+  },
+
+  async saveTriggerCatalog(triggers) {
+    await ensureDb();
+    const safe = Array.isArray(triggers) ? triggers : [];
+    if (useSupabase && supabase) {
+      const { error } = await supabase
+        .from("columns_config")
+        .upsert({ id: "trigger_catalog", config: { triggers: safe } });
+      if (error) throw error;
+    } else {
+      inMemoryTriggerCatalog = safe;
     }
   },
 

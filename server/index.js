@@ -312,6 +312,69 @@ app.put("/api/columns", async (req, res) => {
   }
 });
 
+// 10a. Season AOQ dates (Category + Season fallback deadline)
+app.get("/api/season-aoq", async (req, res) => {
+  try {
+    const map = await db.getSeasonAoq();
+    res.json(map);
+  } catch (err) {
+    console.error("Error in GET /api/season-aoq:", err);
+    res.status(500).json({ error: "Failed to fetch season AOQ config: " + err.message });
+  }
+});
+
+app.put("/api/season-aoq", async (req, res) => {
+  try {
+    await db.saveSeasonAoq(req.body);
+    res.json({ success: true, message: "Season AOQ config updated." });
+  } catch (err) {
+    console.error("Error in PUT /api/season-aoq:", err);
+    res.status(500).json({ error: "Failed to save season AOQ config: " + err.message });
+  }
+});
+
+// 10a-2. Plant aliases (merge / hide plant names)
+app.get("/api/plant-aliases", async (req, res) => {
+  try {
+    const config = await db.getPlantAliases();
+    res.json(config);
+  } catch (err) {
+    console.error("Error in GET /api/plant-aliases:", err);
+    res.status(500).json({ error: "Failed to fetch plant aliases: " + err.message });
+  }
+});
+
+app.put("/api/plant-aliases", async (req, res) => {
+  try {
+    await db.savePlantAliases(req.body);
+    res.json({ success: true, message: "Plant aliases updated." });
+  } catch (err) {
+    console.error("Error in PUT /api/plant-aliases:", err);
+    res.status(500).json({ error: "Failed to save plant aliases: " + err.message });
+  }
+});
+
+// 10a-3. Trigger catalog (planner-defined Triggers with their own AOQ date + Category/Season)
+app.get("/api/trigger-catalog", async (req, res) => {
+  try {
+    const triggers = await db.getTriggerCatalog();
+    res.json({ triggers });
+  } catch (err) {
+    console.error("Error in GET /api/trigger-catalog:", err);
+    res.status(500).json({ error: "Failed to fetch trigger catalog: " + err.message });
+  }
+});
+
+app.put("/api/trigger-catalog", async (req, res) => {
+  try {
+    await db.saveTriggerCatalog(req.body?.triggers);
+    res.json({ success: true, message: "Trigger catalog updated." });
+  } catch (err) {
+    console.error("Error in PUT /api/trigger-catalog:", err);
+    res.status(500).json({ error: "Failed to save trigger catalog: " + err.message });
+  }
+});
+
 // 10b. Backups: list (metadata only, no row payload)
 app.get("/api/backups", async (req, res) => {
   try {

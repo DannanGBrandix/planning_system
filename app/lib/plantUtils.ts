@@ -110,6 +110,27 @@ const CANONICAL_PLANTS: Record<string, string> = {
   "THRINDU PRINT": "THARINDU PRINT",
 };
 
+// Runtime, user-managed plant aliases/exclusions — set once from Supabase on app load (see
+// applyPlantAliasConfig, called from page.tsx) so a planner can merge two plant spellings or
+// hide a bogus one from the Plant Performance / Plant Manager UI without a code change or
+// rewriting the raw col11/col12 text on every row. Layered ON TOP of the hardcoded
+// CANONICAL_PLANTS table above (checked first, so a user alias always wins).
+let RUNTIME_PLANT_ALIASES: Record<string, string> = {};
+let RUNTIME_EXCLUDED_PLANTS: Set<string> = new Set();
+
+export function applyPlantAliasConfig(config: { aliases?: Record<string, string>; excluded?: string[] }): void {
+  const aliases: Record<string, string> = {};
+  Object.entries(config.aliases || {}).forEach(([k, v]) => {
+    if (k && v) aliases[k.trim().toUpperCase()] = v.trim().toUpperCase();
+  });
+  RUNTIME_PLANT_ALIASES = aliases;
+  RUNTIME_EXCLUDED_PLANTS = new Set((config.excluded || []).map((p) => p.trim().toUpperCase()));
+}
+
+export function getPlantAliasRuntimeConfig(): { aliases: Record<string, string>; excluded: string[] } {
+  return { aliases: { ...RUNTIME_PLANT_ALIASES }, excluded: Array.from(RUNTIME_EXCLUDED_PLANTS) };
+}
+
 /**
  * Normalizes an individual raw plant string into its clean canonical name.
  */
@@ -134,15 +155,22 @@ export function normalizeSinglePlant(rawName: string): string {
   }
 
   const mapped = CANONICAL_PLANTS[clean];
-  if (mapped) return mapped;
+  let canonical = mapped || clean;
 
   // Fuzzy catch-all for the messier embellishment-plant spellings that the exact list above
   // can't fully enumerate. "Brandix Embellishment(s)" of any wording -> AV; any "H / HI
   // Embellishment(s)" wording -> HI EMB.
-  if (/BRANDIX/.test(clean) && /\bEMB/.test(clean)) return "AV";
-  if (/^H(?:I)?\s*[- ]?\s*EMB/.test(clean)) return "HI EMB";
+  if (!mapped) {
+    if (/BRANDIX/.test(clean) && /\bEMB/.test(clean)) canonical = "AV";
+    else if (/^H(?:I)?\s*[- ]?\s*EMB/.test(clean)) canonical = "HI EMB";
+  }
 
-  return clean;
+  // A user-defined alias (Plant Manager merge) applies on top of the built-in mapping — chase
+  // it once more in case the merge target is itself aliased.
+  const userMapped = RUNTIME_PLANT_ALIASES[canonical];
+  if (userMapped) canonical = userMapped;
+
+  return canonical;
 }
 
 // Every distinct canonical plant name, longest first, as a whitespace-flexible regex — used to
@@ -202,6 +230,7 @@ const NON_TRACKED_PLANTS = new Set(["BFL", "MARTEX", "DYNAWASH", "AD"]);
 function isTrackablePlant(canonical: string): boolean {
   if (!canonical) return false;
   if (NON_TRACKED_PLANTS.has(canonical)) return false;
+  if (RUNTIME_EXCLUDED_PLANTS.has(canonical)) return false;
   if (canonical.length <= 2 && !CANONICAL_PLANTS[canonical]) return false;
   return true;
 }
@@ -221,8 +250,13 @@ export function extractPlants(cellValue?: string | null): string[] {
   const tokens = clean.split(/>>|>|\+|\/|,|\n/);
 
   const plantSet = new Set<string>();
+  // extractKnownPlantsFromToken below returns names straight from KNOWN_PLANT_MATCHERS
+  // (built once from CANONICAL_PLANTS), bypassing normalizeSinglePlant entirely — so a runtime
+  // Plant Manager merge (RUNTIME_PLANT_ALIASES) has to be re-applied here too, or it would only
+  // ever take effect on the "nothing known matched" fallback path below.
   const add = (name: string) => {
-    if (isTrackablePlant(name)) plantSet.add(name);
+    const resolved = RUNTIME_PLANT_ALIASES[name] || name;
+    if (isTrackablePlant(resolved)) plantSet.add(resolved);
   };
   tokens.forEach((tok) => {
     if (!tok || !tok.trim()) return;

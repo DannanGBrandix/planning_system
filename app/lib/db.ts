@@ -459,6 +459,93 @@ export async function saveColumns(cols: ColumnMapping): Promise<void> {
   }
 }
 
+// Season AOQ dates — { "<CATEGORY>|||<SEASON>": "YYYY-MM-DD" }. See triggerUtils.seasonAoqKey
+// for the key format both Trigger Manager and Plant Performance share.
+export type SeasonAoqMap = Record<string, string>;
+
+export async function getSeasonAoqConfig(): Promise<SeasonAoqMap> {
+  try {
+    const res = await apiFetch(`/season-aoq`);
+    if (!res.ok) throw new Error("Failed to fetch season AOQ config");
+    return await res.json();
+  } catch (err) {
+    console.warn("getSeasonAoqConfig failed:", err);
+    return {};
+  }
+}
+
+export async function saveSeasonAoqConfig(map: SeasonAoqMap): Promise<void> {
+  const res = await apiFetch(`/season-aoq`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(map),
+  });
+  if (!res.ok) throw new Error("Failed to save season AOQ config");
+}
+
+// Plant aliases — merge (aliases) or hide (excluded) plant names without touching raw
+// col11/col12 row data. Applied in app/lib/plantUtils.ts via applyPlantAliasConfig.
+export interface PlantAliasConfig {
+  aliases: Record<string, string>;
+  excluded: string[];
+}
+
+export async function getPlantAliasConfig(): Promise<PlantAliasConfig> {
+  try {
+    const res = await apiFetch(`/plant-aliases`);
+    if (!res.ok) throw new Error("Failed to fetch plant aliases");
+    const data = await res.json();
+    return {
+      aliases: data?.aliases && typeof data.aliases === "object" ? data.aliases : {},
+      excluded: Array.isArray(data?.excluded) ? data.excluded : [],
+    };
+  } catch (err) {
+    console.warn("getPlantAliasConfig failed:", err);
+    return { aliases: {}, excluded: [] };
+  }
+}
+
+export async function savePlantAliasConfig(config: PlantAliasConfig): Promise<void> {
+  const res = await apiFetch(`/plant-aliases`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error("Failed to save plant aliases");
+}
+
+// Trigger catalog — planner-defined Triggers, each with its own AOQ date and the Category +
+// Season it belongs to. Backs the Trigger autocomplete on col2 (Table.tsx) and the "Add Trigger"
+// form on the Season AOQ Dates page (TriggerManagementView.tsx).
+export interface TriggerCatalogEntry {
+  id: string;
+  name: string;
+  category: string;
+  season: string;
+  aoqIso: string; // "YYYY-MM-DD"
+}
+
+export async function getTriggerCatalog(): Promise<TriggerCatalogEntry[]> {
+  try {
+    const res = await apiFetch(`/trigger-catalog`);
+    if (!res.ok) throw new Error("Failed to fetch trigger catalog");
+    const data = await res.json();
+    return Array.isArray(data?.triggers) ? data.triggers : [];
+  } catch (err) {
+    console.warn("getTriggerCatalog failed:", err);
+    return [];
+  }
+}
+
+export async function saveTriggerCatalog(triggers: TriggerCatalogEntry[]): Promise<void> {
+  const res = await apiFetch(`/trigger-catalog`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ triggers }),
+  });
+  if (!res.ok) throw new Error("Failed to save trigger catalog");
+}
+
 // Default columns mapping
 export const DEFAULT_COLUMNS: ColumnMapping = {
   col1: "Status",

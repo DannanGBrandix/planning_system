@@ -25,7 +25,7 @@ function getMondayOfCurrentWeek(): string {
   const monday = new Date(d.setDate(diff));
   return toLocalDateStr(monday);
 }
-import { EmbellishmentRow, ColumnMapping, getRowStatus } from "../lib/db";
+import { EmbellishmentRow, ColumnMapping, getRowStatus, getTriggerCatalog, TriggerCatalogEntry } from "../lib/db";
 import { isCkFamilyCategory } from "../lib/ckCategories";
 import RowDetailsModal from "./RowDetailsModal";
 import EventStatusPanel from "./EventStatusPanel";
@@ -260,6 +260,14 @@ export default function Table({
   setSelectedGraphicFilter,
   currentRole,
 }: TableProps) {
+  // Trigger catalog (planner-defined Triggers with their own AOQ date + Category/Season) —
+  // powers the col2 "Trigger" cell's autocomplete below and, on pick, auto-fills col20 (AOQ)
+  // with that trigger's date. Defined on the Season AOQ Dates page (TriggerManagementView).
+  const [triggerCatalog, setTriggerCatalog] = useState<TriggerCatalogEntry[]>([]);
+  useEffect(() => {
+    getTriggerCatalog().then(setTriggerCatalog);
+  }, []);
+
   // Selection
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   
@@ -613,6 +621,17 @@ export default function Table({
     const row = rows.find((r) => r.id === rowId);
     if (row && row[colKey] !== editValue) {
       let updatedRow: EmbellishmentRow = { ...row, [colKey]: editValue };
+      // Picking (or typing an exact match for) a known Trigger auto-fills its AOQ date onto
+      // col20 — but only when col20 is still blank, so this never overwrites an AOQ date/verdict
+      // someone already set by hand.
+      if (colKey === "col2" && !String(row.col20 || "").trim()) {
+        const match = triggerCatalog.find(
+          (t) => t.name.trim().toLowerCase() === editValue.trim().toLowerCase(),
+        );
+        if (match?.aoqIso) {
+          updatedRow.col20 = match.aoqIso;
+        }
+      }
       if (colKey.match(/^\d{4}-\d{2}-\d{2}$/)) {
         const parsedNew = parseEventValue(editValue);
         // Same rule as the Event Status Panel: a "Planned" value typed onto a date pins that
@@ -681,6 +700,22 @@ export default function Table({
       onDeleteMultipleRows(selectedIds);
       setSelectedIds([]);
     }
+  };
+
+  // AWR (col26 — see db.ts COLUMN_LABELS, ActionCenterView's KEY_DATE_COLS, and the Excel
+  // import's "AWR"/"AWR DATE" aliases) is a manual field: the planner picks a date and applies
+  // it to every selected graphic at once. It must never be derived from the AWB/DHL tracking
+  // text — that string only tells us when the strike-off was SENT to NY, not when the
+  // artwork/graphic itself was received.
+  const [bulkAwrDate, setBulkAwrDate] = useState<string>("");
+  const handleBulkSetAwrDate = () => {
+    if (!bulkAwrDate) return;
+    rows.forEach((r) => {
+      if (!selectedIds.includes(r.id)) return;
+      onUpdateRow({ ...r, col26: bulkAwrDate });
+    });
+    setSelectedIds([]);
+    setBulkAwrDate("");
   };
 
   // Helper to determine the input field type for inline editing
@@ -833,6 +868,25 @@ export default function Table({
       );
     }
 
+    // col2 is Trigger — suggest from the planner-defined trigger catalog (Season AOQ Dates page)
+    // as the user types; picking (or typing an exact match for) one auto-fills col20 above.
+    if (colKey === "col2") {
+      return (
+        <input
+          ref={inputRef as React.RefObject<HTMLInputElement>}
+          type="text"
+          list="trigger-catalog-datalist"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onBlur={saveCell}
+          onKeyDown={handleKeyDown}
+          autoComplete="off"
+          data-lpignore="true"
+          className="w-full h-full px-2 py-1 text-xs bg-transparent border border-blue-500 focus:outline-none rounded text-zinc-900 dark:text-zinc-100"
+        />
+      );
+    }
+
     return (
       <input
         ref={inputRef as React.RefObject<HTMLInputElement>}
@@ -951,7 +1005,12 @@ export default function Table({
 
   return (
     <div className="flex flex-col gap-4 text-slate-100">
-      
+      <datalist id="trigger-catalog-datalist">
+        {triggerCatalog.map((t) => (
+          <option key={t.id} value={t.name} />
+        ))}
+      </datalist>
+
       {/* Table Toolbar */}
       <div className="sticky left-0 w-[calc(100vw-64px)] flex flex-col sm:flex-row items-center justify-between gap-4 p-4 border border-slate-800 rounded-2xl shadow-xl bg-[#141c2e] text-slate-200 z-20">
         <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -1004,6 +1063,23 @@ export default function Table({
                 </svg>
                 Delete Selected ({selectedIds.length})
               </button>
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-sky-500/30 bg-sky-500/10">
+                <input
+                  type="date"
+                  value={bulkAwrDate}
+                  onChange={(e) => setBulkAwrDate(e.target.value)}
+                  className="bg-transparent text-xs text-sky-200 outline-hidden [color-scheme:dark]"
+                  title="Artwork (AWR) Received Date to apply"
+                />
+                <button
+                  onClick={handleBulkSetAwrDate}
+                  disabled={!bulkAwrDate}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-sky-300 bg-sky-500/20 hover:bg-sky-500/30 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-all"
+                  title="Set the Artwork (AWR) Received Date on every selected graphic"
+                >
+                  Set AWR Date ({selectedIds.length})
+                </button>
+              </div>
             </div>
           )}
           
