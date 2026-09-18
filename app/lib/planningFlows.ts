@@ -99,7 +99,6 @@ export const EVENT_SUFFIXES = {
 };
 
 export const POST_NY_TESTING_RULES = [
-  { trigger: "CK", testEvent: "CK-TEST", description: "Plan CK Check Test after NY" },
   { trigger: "V8 & PINK", testEvent: "DTC-3010 / LTD-92", description: "Plan DTC-3010 / LTD-92 testing after NY" },
 ];
 
@@ -176,7 +175,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     steps: [
       { fromEvent: "FS", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSDS", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "PPSDS", toEvent: "RDPS", leadTimeDays: 1, label: "1d" },
+      { fromEvent: "PPSDS", toEvent: "RDPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "RDPS", toEvent: "PPS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
@@ -185,7 +184,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 35,
+    totalLeadTimeDays: 36,
   },
   {
     id: 4,
@@ -256,7 +255,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSDS", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "PPSDS", toEvent: "RDPS", leadTimeDays: 1, label: "1d" },
+      { fromEvent: "PPSDS", toEvent: "RDPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "RDPS", toEvent: "PPS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
@@ -265,7 +264,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
 
   // ------------------------------------------------------------
@@ -419,13 +418,18 @@ export function addWorkingDays(startDate: Date, calendarDays: number): Date {
  */
 export function calculateAutoSchedule(
   startDateStr: string,
-  flowId: number,
+  flowIdOrFlow: number | PlanningFlow,
   eventSuffix: "S" | "F" | "T" = "S",
   triggerBrand?: string,
   failedEventsMap?: Record<string, { dateKey: string; val: string; code: string }>,
   plantRaw?: unknown
 ): Record<string, string> {
-  const flow = PLANNING_FLOWS.find((f) => f.id === flowId);
+  // Accepts either a flow id (looked up from the static list, e.g. an external caller) or an
+  // already-resolved PlanningFlow (e.g. matchedFlow/flow from autoScheduleEmbellishmentRow /
+  // resumeStaleFlow, which may be the row's graphic-type-adjusted flow — see
+  // detectMatchingFlow/applyGraphicTypeSkip). Re-resolving by id there would silently discard that
+  // adjustment (NY/NYC would come back for a Branding/Trial row's schedule).
+  const flow = typeof flowIdOrFlow === "number" ? PLANNING_FLOWS.find((f) => f.id === flowIdOrFlow) : flowIdOrFlow;
   if (!flow) return {};
 
   const isBabl = isBablPlant(plantRaw);
@@ -528,10 +532,6 @@ export function calculateAutoSchedule(
     // Check Post-NY testing rule
     if (step.fromEvent === "NY") {
       const brandUpper = (triggerBrand || "").toUpperCase();
-      if (brandUpper.includes("CK")) {
-        resultSchedule[dateKey] = `CK-TEST`;
-        return;
-      }
       if (brandUpper.includes("V8") || brandUpper.includes("PINK")) {
         resultSchedule[dateKey] = `DTC-3010`;
         return;
@@ -771,7 +771,56 @@ export function detectPlanCycles(row: Record<string, unknown>): PlanCycle[] {
   });
 }
 
-export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
+// Graphic Type (col19) values that never go to New York — per the planner, Branding and Trial
+// graphics are visibly called out in that column on the dashboard already, so no separate flag
+// is needed to decide it. Same values/matching convention as db.ts's
+// ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES (lowercase substring match).
+const NY_SKIPPED_GRAPHIC_TYPES = ["branding", "trial"];
+
+function skipsNyForGraphicType(row: Record<string, unknown>): boolean {
+  const graphicType = String(row.col19 || "").toLowerCase();
+  return NY_SKIPPED_GRAPHIC_TYPES.some((t) => graphicType.includes(t));
+}
+
+/**
+ * Bridges a flow's NY/NYC leg out entirely — the step feeding NY reconnects straight to whatever
+ * followed NYC, reusing that feeding step's own lead time (same convention already used by the
+ * "Direct Fabrics Fast-Track" flow, which bypasses NY/NYC the same way). A flow with no NY/NYC
+ * (already a fast-track / FIT FUNCTIONALS flow) is returned unchanged.
+ */
+function stripNyNyc(flow: PlanningFlow): PlanningFlow {
+  const isNyNode = (event: string) => event === "NY" || event === "NYC";
+  if (!flow.sequence.some(isNyNode)) return flow;
+
+  const toNy = flow.steps.find((s) => isNyNode(s.toEvent) && !isNyNode(s.fromEvent));
+  const fromNy = [...flow.steps].reverse().find((s) => isNyNode(s.fromEvent) && !isNyNode(s.toEvent));
+  const steps = flow.steps.filter((s) => !isNyNode(s.fromEvent) && !isNyNode(s.toEvent));
+  if (toNy && fromNy) {
+    const keptBefore = flow.steps.slice(0, flow.steps.indexOf(toNy)).filter(
+      (s) => !isNyNode(s.fromEvent) && !isNyNode(s.toEvent),
+    ).length;
+    steps.splice(keptBefore, 0, {
+      fromEvent: toNy.fromEvent,
+      toEvent: fromNy.toEvent,
+      leadTimeDays: toNy.leadTimeDays,
+      label: toNy.label,
+    });
+  }
+
+  return {
+    ...flow,
+    sequence: flow.sequence.filter((s) => !isNyNode(s)),
+    steps,
+    totalLeadTimeDays: steps.reduce((sum, s) => sum + s.leadTimeDays, 0),
+  };
+}
+
+function applyGraphicTypeSkip(row: Record<string, unknown>, flow: PlanningFlow): PlanningFlow {
+  return skipsNyForGraphicType(row) ? stripNyNyc(flow) : flow;
+}
+
+/** Auto-picks the planning flow for a row's plant/process structure — see detectMatchingFlow. */
+function detectMatchingFlowRaw(row: Record<string, unknown>): PlanningFlow {
   const process = String(String(String(String(String(row.col10 || ""))))).toUpperCase();
   // col12 that is actually a PROCESS description (not a plant chain) is ignored for every
   // plant-structure check below — see plantFlowIsProcessText.
@@ -915,6 +964,15 @@ export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
     default:
       return PLANNING_FLOWS.find((f) => f.id === 1)!; // Standard Fabrics Flow
   }
+}
+
+/**
+ * Auto-picks the planning flow for this row from its plant/process structure (detectMatchingFlow-
+ * Raw), then drops NY/NYC from it when the row's Graphic Type (col19) is Branding or Trial —
+ * those never go to New York, so no planning event should ever be generated for either milestone.
+ */
+export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
+  return applyGraphicTypeSkip(row, detectMatchingFlowRaw(row));
 }
 
 /**
@@ -1258,7 +1316,9 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   });
   const pinnedKeys = new Set(Object.values(pinnedDateByCode));
 
-  const matchedFlow = flowId ? PLANNING_FLOWS.find((f) => f.id === flowId) || detectMatchingFlow(row) : detectMatchingFlow(row);
+  const matchedFlow = flowId
+    ? applyGraphicTypeSkip(row, PLANNING_FLOWS.find((f) => f.id === flowId) || detectMatchingFlow(row))
+    : detectMatchingFlow(row);
   
   // Start date is always "as soon as possible" — the next working day — once a row's allocation
   // data is complete, full stop. This used to also check Fabric In Date (col14) / Ready Date
@@ -1365,7 +1425,7 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   });
 
   const triggerBrand = String(row.col3 || row.col7 || "");
-  const scheduleMap = calculateAutoSchedule(effectiveStartDate, matchedFlow.id, eventSuffix, triggerBrand, failedEventsMap, row.col11);
+  const scheduleMap = calculateAutoSchedule(effectiveStartDate, matchedFlow, eventSuffix, triggerBrand, failedEventsMap, row.col11);
 
   // If this row is one stage of a multi-plant PLANT FLOW chain (e.g. "LEEMA>BFL>RICHCOLOR"),
   // the FULL sequence's dates are still calculated above (the lead-time math has to account for
@@ -1683,7 +1743,6 @@ export function autoScheduleForwardFromEvent<T extends Record<string, unknown>>(
 
     const dateKey = toISO(current);
     if (step.fromEvent === "NY") {
-      if (brand.includes("CK")) { out[dateKey] = "CK-TEST"; continue; }
       if (brand.includes("V8") || brand.includes("PINK")) { out[dateKey] = "DTC-3010"; continue; }
     }
     out[dateKey] = toSlot.includes("-") ? step.toEvent : `${toBase}-S`;
@@ -1739,7 +1798,7 @@ export function continueStalledSchedule<T extends Record<string, unknown>>(
   }
 
   const triggerBrand = String(row.col3 || row.col7 || "");
-  const scheduleMap = calculateAutoSchedule(fromDateStr, flow.id, "S", triggerBrand, undefined, row.col11);
+  const scheduleMap = calculateAutoSchedule(fromDateStr, flow, "S", triggerBrand, undefined, row.col11);
 
   const updatedRow: Record<string, unknown> = { ...row };
   Object.entries(scheduleMap).forEach(([dateKey, val]) => {

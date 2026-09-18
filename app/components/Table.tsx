@@ -2446,25 +2446,14 @@ export default function Table({
           const row = rows.find(r => r.id === rowId);
           if (!row) return;
           const parsedNew = parseEventValue(newValue);
+          const isClear = !newValue || !newValue.trim();
 
-          // "Clear Event" — delete this milestone AND wipe the whole downstream plan (every planned
-          // "-S" pill after it), leaving a clean slate from here on. Everything before it, and any
-          // real Pass/Fail verdict, is kept. Do NOT run the normal auto-scheduler — it rebuilds the
-          // flow from the earliest date and immediately regenerates the milestone that was just
-          // cleared, which made "Clear Event" a no-op. Downstream rebuilds when the planner drops
-          // the milestone on its new date (autoScheduleForwardFromEvent).
-          if (!newValue || !newValue.trim()) {
-            const cleared = clearEventForward({ ...row }, dateKey) as EmbellishmentRow;
-            cleared.change_reason = "Event cleared via Event Status Panel";
-            await onUpdateRow(cleared);
-            return;
-          }
-
-          // A "<date>_<PLANT>" key means the planner edited ONE cross-dev leg. That leg's schedule
-          // must reschedule on its own — the shared/bare plan and every other leg stay put. The old
-          // code fell through to autoScheduleEmbellishmentRow(row), which only ever touches bare
-          // date keys, so failing (e.g.) BABL's FR silently regenerated the first leg's (HI EMB's)
-          // plan instead and never rescheduled BABL at all.
+          // A "<date>_<PLANT>" key means the planner edited (or is clearing) ONE cross-dev leg.
+          // That leg's schedule must reschedule/clear on its own — the shared/bare plan and every
+          // other leg stay put. This must run BEFORE the bare-key "Clear Event" branch below:
+          // clearEventForward only ever wipes bare (unsuffixed) date keys, so calling it directly
+          // on a "<date>_<PLANT>" key cleared the one cell but left every downstream event on that
+          // same leg untouched (they live under "<other-date>_<PLANT>" keys it never looks at).
           const legMatch = dateKey.match(/^(\d{4}-\d{2}-\d{2})_(.+)$/);
           if (legMatch) {
             const legDate = legMatch[1];
@@ -2499,17 +2488,24 @@ export default function Table({
                 legBare[k] = `${base}-S`;
               });
             }
-            legBare[legDate] = newValue;
-
-            const scheduled = (parsedNew && parsedNew.status === "planned")
-              ? autoScheduleForwardFromEvent(legBare, parsedNew.code, legDate)
-              : autoScheduleEmbellishmentRow(legBare);
+            // "Clear Event" on one leg: wipe that leg's downstream plan (every planned "-S" pill
+            // after it, on THIS leg only) the same way the shared-plan clear below does, just
+            // scoped to legBare's own bare-date view so the other leg(s) never get touched.
+            let scheduled: Record<string, unknown>;
+            if (isClear) {
+              scheduled = clearEventForward(legBare, legDate);
+            } else {
+              legBare[legDate] = newValue;
+              scheduled = (parsedNew && parsedNew.status === "planned")
+                ? autoScheduleForwardFromEvent(legBare, parsedNew.code, legDate)
+                : autoScheduleEmbellishmentRow(legBare);
+            }
 
             // Write the fresh dates back onto this leg's "<date>_<PLANT>" keys only; mark it diverged.
             const outRow: EmbellishmentRow = {
               ...row,
               [`_leg_${legPlant}`]: "1",
-              change_reason: "Updated via Event Status Panel",
+              change_reason: isClear ? "Event cleared via Event Status Panel" : "Updated via Event Status Panel",
             } as EmbellishmentRow;
             Object.keys(outRow).forEach(k => {
               if (legRe.test(k)) (outRow as Record<string, unknown>)[k] = "";
@@ -2520,6 +2516,20 @@ export default function Table({
               }
             });
             await onUpdateRow(outRow);
+            return;
+          }
+
+          // "Clear Event" on the shared/bare plan — delete this milestone AND wipe the whole
+          // downstream plan (every planned "-S" pill after it), leaving a clean slate from here on.
+          // Everything before it, and any real Pass/Fail verdict, is kept. Do NOT run the normal
+          // auto-scheduler — it rebuilds the flow from the earliest date and immediately
+          // regenerates the milestone that was just cleared, which made "Clear Event" a no-op.
+          // Downstream rebuilds when the planner drops the milestone on its new date
+          // (autoScheduleForwardFromEvent).
+          if (isClear) {
+            const cleared = clearEventForward({ ...row }, dateKey) as EmbellishmentRow;
+            cleared.change_reason = "Event cleared via Event Status Panel";
+            await onUpdateRow(cleared);
             return;
           }
 

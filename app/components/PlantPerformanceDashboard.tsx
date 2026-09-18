@@ -1,7 +1,7 @@
 "use client";
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  EmbellishmentRow, getRowStatus, getSeasonAoqConfig, SeasonAoqMap,
+  EmbellishmentRow, getRowStatus, isRowSent, getSeasonAoqConfig, SeasonAoqMap,
   getPlantAliasConfig, savePlantAliasConfig, PlantAliasConfig,
 } from "../lib/db";
 import { parseEventValue } from "../lib/eventCodes";
@@ -300,7 +300,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
       const catCount = new Map<string, number>();
       const trigCount = new Map<string, number>();
       let aoqIso: string | null = null;
-      let nyPass = false;
+      let anySent = false; // isRowSent() — same "gone out to NY" evidence as the main Dashboard's "HQ Dispatched to USA" tile
       let approvalIso: string | null = null;
       let rejectedIso: string | null = null;
       let anyEstimated = false; // verdict came from a live comment parse, not a materialised nycv:/cell
@@ -318,6 +318,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
         const st = getRowStatus(r);
         if (st === "approved") anyApprovedStatus = true;
         if (st === "resubmit") anyResubmitStatus = true;
+        if (isRowSent(r)) anySent = true;
 
         const rowAoq = getRowAoqIso(r, seasonAoqMap);
         if (rowAoq && (!aoqIso || rowAoq > aoqIso)) aoqIso = rowAoq; // latest wins = lenient
@@ -328,7 +329,6 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
           if (!p) return;
           const bc = baseCode(val);
           const fc = fullCode(val);
-          if (p.status === "pass" && bc === "NY" && fc === "NY") nyPass = true;
           if ((bc === "NYC" || (bc === "NY" && fc === "NY")) && (!lastNycIso || iso > lastNycIso)) lastNycIso = iso;
         });
 
@@ -390,7 +390,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
         trigger,
         aoqIso,
         plants: [...plantSet].sort(),
-        dispatched: nyPass,
+        dispatched: anySent,
         approvalIso: effApprovalIso,
         rejectedIso: effRejected ? (rejectedIso || null) : null,
         verdict,
@@ -582,7 +582,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
       <div class="grid">
         <div class="card"><div class="l">Graphics in season</div><div class="v">${t.came}</div></div>
         <div class="card"><div class="l">Allocated to a plant</div><div class="v">${t.allocated}</div></div>
-        <div class="card"><div class="l">Dispatched (PPS+NY)</div><div class="v">${t.dispatched}</div></div>
+        <div class="card"><div class="l">Dispatched (sent to NY)</div><div class="v">${t.dispatched}</div></div>
         <div class="card"><div class="l">Approved on time</div><div class="v" style="color:#059669">${t.onTime}</div>
           <div class="s">${analysis.overallRate}% of allocated</div></div>
       </div>`;
@@ -754,7 +754,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
           {[
             { label: "Graphics in season", value: t.came, sub: "any status", color: "text-zinc-100" },
             { label: "Allocated to a plant", value: t.allocated, sub: `${t.scoredGraphics} live`, color: "text-blue-300" },
-            { label: "Dispatched", value: t.dispatched, sub: "NY passed (NY|P)", color: "text-cyan-300" },
+            { label: "Dispatched", value: t.dispatched, sub: "Sent to NY", color: "text-cyan-300" },
             { label: "Approved on time", value: t.onTime, sub: `${analysis.overallRate}% of allocated`, color: "text-emerald-400" },
             { label: "Late / Rejected", value: t.late + t.rejected, sub: `${t.late} late · ${t.rejected} rej`, color: "text-amber-400" },
             { label: "Awaiting verdict", value: t.pending, sub: `${t.unscored} no AOQ · ${t.estimated} ≈est.`, color: "text-zinc-300" },

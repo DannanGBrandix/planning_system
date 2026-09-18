@@ -7,20 +7,83 @@ import {
   getTriggerCatalog,
   saveTriggerCatalog,
   TriggerCatalogEntry,
+  saveMultipleRows,
 } from "../lib/db";
 import { formatDateDDMMYYYY, seasonAoqKey } from "../lib/triggerUtils";
 
 interface TriggerManagementViewProps {
   rows: EmbellishmentRow[]; // current-version rows only (same convention as AdvancedDashboard)
   onUpdateRow: (row: EmbellishmentRow) => void | Promise<void>;
+  onRowsChanged?: () => void | Promise<void>; // re-fetch after a bulk write bypasses onUpdateRow's local state update
   currentRole: string;
 }
 
 export default function TriggerManagementView({
   rows,
+  onRowsChanged,
   currentRole,
 }: TriggerManagementViewProps) {
   const canManage = currentRole === "Planner" || currentRole === "Management";
+  const [pushBusy, setPushBusy] = useState<{ label: string; done: number; total: number } | null>(null);
+
+  // Bulk-writes patched rows straight to the DB in large chunks (via /api/rows/bulk), instead of
+  // one PUT per row through onUpdateRow — which for a few thousand rows is dramatically slower
+  // (each PUT also re-scans the whole dataset for the Trigger-based AOQ fan-out in page.tsx).
+  // Since we already computed the exact target set by Category+Season here, that per-row fan-out
+  // isn't needed. Bypassing onUpdateRow also means local state doesn't auto-update, so callers
+  // trigger `onRowsChanged` afterward to re-fetch from the DB.
+  const CHUNK = 300;
+  const applyRowsBulk = async (label: string, targets: EmbellishmentRow[]) => {
+    setPushBusy({ label, done: 0, total: targets.length });
+    for (let i = 0; i < targets.length; i += CHUNK) {
+      const chunk = targets.slice(i, i + CHUNK);
+      await saveMultipleRows(chunk);
+      setPushBusy({ label, done: Math.min(i + CHUNK, targets.length), total: targets.length });
+    }
+    setPushBusy(null);
+    await onRowsChanged?.();
+  };
+
+  // Writes an AOQ date onto col20 of every row matching this Category+Season, overwriting
+  // whatever is already there (a different date, "Approved", etc.) — the season AOQ date is
+  // meant to be authoritative once set here. Confirms first since this can touch many rows.
+  const pushAoqDateToRows = async (key: string, category: string, season: string, iso: string, skipConfirm = false) => {
+    const targets = rows.filter((row) => seasonAoqKey(row.col3, row.col4) === key);
+    if (targets.length === 0) return;
+    if (!skipConfirm) {
+      const ok = window.confirm(
+        `Set AOQ Date to ${formatDateDDMMYYYY(iso)} on all ${targets.length} row(s) in ${category} ${season}?\n\n` +
+          `This overwrites col20 (AOQ Date) on every matching row on the Dashboard, even if it already has a different date or value.`,
+      );
+      if (!ok) return false;
+    }
+    const patched = targets.map((row) => ({ ...row, col20: iso, change_reason: "AOQ date applied from Trigger Manager (Category+Season)" }));
+    await applyRowsBulk(`Applying AOQ date to ${category} ${season}`, patched);
+    return true;
+  };
+
+  // Backfill: dates set on this page before the auto-push behavior existed (or edited directly
+  // in a way that skipped it) never made it onto col20. This re-applies every Category+Season
+  // date that's already set, in one pass, instead of requiring each row to be re-saved by hand.
+  const pushAllSeasonAoqDates = async (targetRows: SeasonAoqRow[]) => {
+    const withDates = targetRows.filter((r) => r.aoqIso);
+    if (withDates.length === 0) return;
+    const perCombo = withDates.map((r) => ({
+      r,
+      targets: rows.filter((row) => seasonAoqKey(row.col3, row.col4) === r.key),
+    })).filter((c) => c.targets.length > 0);
+    const totalRows = perCombo.reduce((n, c) => n + c.targets.length, 0);
+    if (totalRows === 0) return;
+    const ok = window.confirm(
+      `Apply the AOQ date already set for ${perCombo.length} Category+Season combo(s) onto ${totalRows} row(s) total on the Dashboard?\n\n` +
+        `This overwrites col20 (AOQ Date) on every matching row, even if it already has a different date or value.`,
+    );
+    if (!ok) return;
+    const allPatched = perCombo.flatMap(({ r, targets }) =>
+      targets.map((row) => ({ ...row, col20: r.aoqIso!, change_reason: "AOQ date applied from Trigger Manager (Category+Season)" })),
+    );
+    await applyRowsBulk(`Applying AOQ dates to ${perCombo.length} Category+Season combo(s)`, allPatched);
+  };
 
   // Season AOQ dates — the fallback deadline Plant Performance uses when a row's own Trigger
   // carries no date (col20 blank, and the trigger text isn't an M.D code like "4.7"). Every
@@ -111,6 +174,7 @@ export default function TriggerManagementView({
       const next = { ...seasonAoq, [r.key]: seasonAoqDraft };
       await saveSeasonAoqConfig(next);
       setSeasonAoq(next);
+      await pushAoqDateToRows(r.key, r.category, r.season, seasonAoqDraft);
     } finally {
       setSeasonAoqSaving(null);
     }
@@ -140,6 +204,9 @@ export default function TriggerManagementView({
       next[key] = newSeasonAoqDate || seasonAoq[key] || "";
       await saveSeasonAoqConfig(next);
       setSeasonAoq(next);
+      if (newSeasonAoqDate) {
+        await pushAoqDateToRows(key, newSeasonCategory.trim(), newSeasonName.trim(), newSeasonAoqDate);
+      }
       setNewSeasonCategory("");
       setNewSeasonName("");
       setNewSeasonAoqDate("");
@@ -237,34 +304,59 @@ export default function TriggerManagementView({
 
   return (
     <div className="flex-1 bg-[#09111c] p-6 pb-24 text-white min-h-screen font-sans overflow-y-auto custom-scrollbar">
+      {pushBusy && (
+        <div className="mb-5 px-4 py-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl">
+          <div className="flex items-center justify-between gap-3 mb-2 text-sm font-semibold text-indigo-300">
+            <span>{pushBusy.label}… don&apos;t leave this page until it finishes.</span>
+            <span className="tabular-nums shrink-0">{pushBusy.done} / {pushBusy.total}</span>
+          </div>
+          <div className="h-1.5 bg-indigo-950 rounded-full overflow-hidden">
+            <div className="h-full bg-indigo-400 transition-all"
+              style={{ width: `${pushBusy.total > 0 ? (pushBusy.done / pushBusy.total) * 100 : 100}%` }} />
+          </div>
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
         <div>
           <h2 className="text-lg font-bold text-white">Season AOQ Dates</h2>
           <p className="text-xs text-zinc-500 mt-0.5">
-            Fallback deadline Plant Performance uses when a row&apos;s Trigger has no date of
-            its own (e.g. &quot;KNIT&quot;, &quot;COMPLETE&quot;). One date per Category +
-            Season — PINK, VS and CK each run their own AOQ calendar even within the same
-            season.
+            One date per Category + Season — PINK, VS and CK each run their own AOQ calendar
+            even within the same season. Saving a date here writes it onto col20 (AOQ Date) of
+            every matching row on the Dashboard right away, overwriting whatever was there —
+            it&apos;s also the fallback Plant Performance uses when a row&apos;s Trigger has no
+            date of its own (e.g. &quot;KNIT&quot;, &quot;COMPLETE&quot;).
             {!canManage && " — read-only for your role"}
           </p>
         </div>
-        <div className="relative w-full sm:w-72">
-          <svg
-            className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 10a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          <input
-            type="text"
-            value={seasonSearch}
-            onChange={(e) => setSeasonSearch(e.target.value)}
-            placeholder="Search category or season..."
-            className="w-full pl-9 pr-3 py-2 text-sm bg-zinc-900 border border-zinc-800 rounded-lg text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500/50"
-          />
+        <div className="flex items-center gap-2 flex-wrap">
+          {canManage && (
+            <button
+              onClick={() => pushAllSeasonAoqDates(seasonAoqRows)}
+              disabled={!!pushBusy}
+              className="shrink-0 px-3 py-2 text-xs font-bold text-black bg-amber-400 hover:bg-amber-300 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl transition-colors"
+              title="Re-apply every Category+Season AOQ date already set here onto its matching rows' col20 — use this to backfill dates that were set before this page pushed to rows automatically"
+            >
+              Push all set dates to Dashboard
+            </button>
+          )}
+          <div className="relative w-full sm:w-72">
+            <svg
+              className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 10a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              value={seasonSearch}
+              onChange={(e) => setSeasonSearch(e.target.value)}
+              placeholder="Search category or season..."
+              className="w-full pl-9 pr-3 py-2 text-sm bg-zinc-900 border border-zinc-800 rounded-lg text-white placeholder-zinc-600 focus:outline-none focus:border-amber-500/50"
+            />
+          </div>
         </div>
       </div>
 
@@ -393,22 +485,34 @@ export default function TriggerManagementView({
                       )}
                     </td>
                     {canManage && (
-                      <td className="p-3 text-right">
+                      <td className="p-3 text-right whitespace-nowrap">
                         {r.aoqIso && (
-                          <button
-                            onClick={() => clearSeasonAoqRow(r)}
-                            disabled={seasonAoqSaving === r.key}
-                            className="p-1 text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors"
-                            title="Clear this AOQ date"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                              />
-                            </svg>
-                          </button>
+                          <>
+                            <button
+                              onClick={() => pushAoqDateToRows(r.key, r.category, r.season, r.aoqIso!)}
+                              disabled={!!pushBusy}
+                              className="p-1 text-zinc-500 hover:text-amber-400 hover:bg-amber-950/40 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors"
+                              title="Push this date onto col20 for every matching row on the Dashboard (use if a date set earlier never made it there)"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => clearSeasonAoqRow(r)}
+                              disabled={seasonAoqSaving === r.key}
+                              className="p-1 text-zinc-500 hover:text-rose-400 hover:bg-rose-950/40 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-colors"
+                              title="Clear this AOQ date"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                                />
+                              </svg>
+                            </button>
+                          </>
                         )}
                       </td>
                     )}

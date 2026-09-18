@@ -5443,7 +5443,7 @@ export default function Home() {
           ) : viewMode === "fabricDispatch" ? (
             <FabricDispatchView rows={currentVersionRows} onUpdateRow={handleUpdateRow} />
           ) : viewMode === "triggers" ? (
-            <TriggerManagementView rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
+            <TriggerManagementView rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} onRowsChanged={refreshRows} currentRole={currentRole} />
           ) : viewMode === "reports" ? (
             <ReportsView rows={allCurrentVersionRows} />
           ) : viewMode === "summaryOfGraphics" ? (
