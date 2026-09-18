@@ -422,7 +422,14 @@ export function calculateAutoSchedule(
   eventSuffix: "S" | "F" | "T" = "S",
   triggerBrand?: string,
   failedEventsMap?: Record<string, { dateKey: string; val: string; code: string }>,
-  plantRaw?: unknown
+  plantRaw?: unknown,
+  // Planner-locked ("|X") milestones, keyed by dateKey — a mid-flow event that was manually
+  // dropped on a specific day (e.g. moving PPS out after a retry). Every step at/after a pinned
+  // code must re-anchor its forward walk to the REAL pinned date instead of the naive lead-time
+  // math, or every downstream milestone silently drifts off the sequence-only computed date
+  // (confirmed against real data: pinning PPS on a later date only fixed PPS's own cell — NY/NYC/
+  // MAST after it kept cascading off the wrong, un-pinned date this function computed internally).
+  pinnedEventsMap?: Record<string, { dateKey: string; val: string; code: string }>
 ): Record<string, string> {
   // Accepts either a flow id (looked up from the static list, e.g. an external caller) or an
   // already-resolved PlanningFlow (e.g. matchedFlow/flow from autoScheduleEmbellishmentRow /
@@ -468,8 +475,14 @@ export function calculateAutoSchedule(
         .sort((a, b) => a.dateKey.localeCompare(b.dateKey))
     : [];
   const firstFailed = firstFailedList.length > 0 ? firstFailedList[firstFailedList.length - 1] : null;
+  const firstPinned = pinnedEventsMap
+    ? Object.values(pinnedEventsMap).find((p) => p.code === firstBase)
+    : undefined;
 
-  if (firstFailed) {
+  if (firstPinned) {
+    resultSchedule[firstPinned.dateKey] = firstPinned.val;
+    current = new Date(firstPinned.dateKey);
+  } else if (firstFailed) {
     // Keep EVERY failed attempt of the first event on its own date, not just the latest one.
     firstFailedList.forEach((f) => {
       resultSchedule[f.dateKey] = f.val;
@@ -498,10 +511,23 @@ export function calculateAutoSchedule(
     const codeToUse = step.toEvent;
     const baseCode = codeToUse.split("-")[0].toUpperCase();
 
+    // A pinned milestone always wins: the planner explicitly dropped it on this exact day, so use
+    // that real date verbatim and re-anchor the forward walk to it — every step after this one
+    // must cascade off the REAL pinned date, not the lead-time-only date this loop would otherwise
+    // compute for it.
+    const pinnedForStep = pinnedEventsMap
+      ? Object.values(pinnedEventsMap).find((p) => codeMatchesSlot(p.code, baseCode))
+      : undefined;
+    if (pinnedForStep) {
+      resultSchedule[pinnedForStep.dateKey] = pinnedForStep.val;
+      current = new Date(pinnedForStep.dateKey);
+      return;
+    }
+
     // Find ALL failed attempts for this event code sorted by date
     const failedListForStep = failedEventsMap
       ? Object.values(failedEventsMap)
-          .filter((f) => f.code === baseCode || f.code.startsWith(baseCode) || baseCode.startsWith(f.code))
+          .filter((f) => codeMatchesSlot(f.code, baseCode))
           .sort((a, b) => a.dateKey.localeCompare(b.dateKey))
       : [];
 
@@ -556,12 +582,7 @@ export function calculateAutoSchedule(
       const existing = resultSchedule[f.dateKey];
       const existingBase = existing ? existing.split("|")[0].split("-")[0].toUpperCase() : "";
       const failBase = f.code.split("-")[0].toUpperCase();
-      if (
-        !existing ||
-        existingBase === failBase ||
-        existingBase.startsWith(failBase) ||
-        failBase.startsWith(existingBase)
-      ) {
+      if (!existing || codeMatchesSlot(existingBase, failBase)) {
         resultSchedule[f.dateKey] = f.val;
       }
       const base = f.code.split("-")[0].toUpperCase();
@@ -675,6 +696,22 @@ export function getApplicableFlows(row: Record<string, unknown>): PlanningFlow[]
 // verdict tail stripped ("FR-S" -> "FR", "PPS|P" -> "PPS", "CK-TEST" stays "CK-TEST").
 function planCycleEventBase(v: string): string {
   return v.split("|")[0].trim().toUpperCase().replace(/-(S|F|T|PASS|FAIL)$/i, "");
+}
+
+// Two milestone base codes "match" only when they're identical, or one is a slash-separated half
+// of a combined slot the other represents ("REAP" is one half of "REAP/FCHP", "SEWIN" one half of
+// "SEWIN/SEWS"). A plain string-prefix check ("x.startsWith(y) || y.startsWith(x)") was used here
+// instead and matched unrelated codes that merely happen to share a prefix — "PPSDS".startsWith
+// ("PPS") and "NYC".startsWith("NY") are both true even though PPS/PPSDS and NY/NYC are distinct
+// milestones. That made a PPSDS failure get treated as a failure of the PPS step: PPS was skipped
+// entirely and the forward date-walk reset backwards to the PPSDS retry, landing NY BEFORE RDPS
+// (confirmed against real data: GVU27-059 / 10356689 combo C1 — failing PPSDS corrupted every
+// event from PPS onward).
+function codeMatchesSlot(a: string, b: string): boolean {
+  if (a === b) return true;
+  const aParts = a.split("/");
+  const bParts = b.split("/");
+  return aParts.includes(b) || bParts.includes(a);
 }
 
 // A gap this large (calendar days) between two consecutive scheduled events means the later one
@@ -1331,31 +1368,48 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   // same-file date field of uncertain reliability.
   let effectiveStartDate = startDateStr;
   if (!effectiveStartDate && pinnedKeys.size > 0) {
-    // A row with locked milestones: BACK-SOLVE the flow start from the earliest locked milestone
-    // so its slot in the sequence lands on exactly the day the planner pinned it (and everything
-    // downstream cascades off it). This also means a leftover "-S" pill from a finished earlier
-    // planning cycle can't drag the fresh plan back onto its old dates — the exact bug this
-    // locking was added to stop.
     const earliestPinnedDate = Array.from(pinnedKeys).sort()[0];
-    const earliestPinnedCode = Object.keys(pinnedDateByCode).find(
-      (c) => pinnedDateByCode[c] === earliestPinnedDate,
+
+    // Prefer the REAL earliest date already recorded in the SAME planning cycle as this pin (its
+    // actual FS/FR/fail-retry history) over back-solving a fictitious start purely from the pin's
+    // lead-time math. Back-solving unconditionally — ignoring real history still sitting right on
+    // the row — was rewriting FS/FR to brand-new invented dates every time a downstream event got
+    // failed/passed (which routes through this full rebuild) AFTER an earlier mid-flow milestone
+    // had been manually moved/pinned: confirmed against real data — fail PPSDS, move PPS out to a
+    // later date (pinning it), then later fail NY — FS/FR silently reset to dates back-solved from
+    // PPS's new position instead of staying on their real recorded dates, corrupting the whole plan.
+    // detectPlanCycles already knows how to tell "this pin's own real history" apart from "a stale
+    // leftover from an abandoned earlier cycle" (>45-day gap / first-milestone-repeats rule), so
+    // reuse it instead of duplicating that judgment here.
+    const pinCycle = detectPlanCycles(row).find(
+      (c) => c.startKey <= earliestPinnedDate && earliestPinnedDate <= c.endKey,
     );
-    const seqIdx = earliestPinnedCode
-      ? matchedFlow.sequence.findIndex((slot) =>
-          slot.split("/").some((p) => p.split("-")[0].trim().toUpperCase() === earliestPinnedCode),
-        )
-      : -1;
-    if (seqIdx > 0) {
-      let cumulativeDays = 0;
-      for (let i = 0; i < seqIdx && i < matchedFlow.steps.length; i++) {
-        cumulativeDays += matchedFlow.steps[i].leadTimeDays;
-      }
-      effectiveStartDate = subtractWorkingDays(new Date(earliestPinnedDate), cumulativeDays)
-        .toISOString()
-        .split("T")[0];
+    if (pinCycle && pinCycle.startKey < earliestPinnedDate) {
+      effectiveStartDate = pinCycle.startKey;
     } else {
-      // Pinned milestone is the flow's opener (or not in the flow): its date IS the start.
-      effectiveStartDate = earliestPinnedDate;
+      // No earlier real history in this cycle (the pin IS the earliest event) — BACK-SOLVE the
+      // flow start from the pinned milestone so its slot in the sequence lands on exactly the day
+      // the planner pinned it (and everything downstream cascades off it).
+      const earliestPinnedCode = Object.keys(pinnedDateByCode).find(
+        (c) => pinnedDateByCode[c] === earliestPinnedDate,
+      );
+      const seqIdx = earliestPinnedCode
+        ? matchedFlow.sequence.findIndex((slot) =>
+            slot.split("/").some((p) => p.split("-")[0].trim().toUpperCase() === earliestPinnedCode),
+          )
+        : -1;
+      if (seqIdx > 0) {
+        let cumulativeDays = 0;
+        for (let i = 0; i < seqIdx && i < matchedFlow.steps.length; i++) {
+          cumulativeDays += matchedFlow.steps[i].leadTimeDays;
+        }
+        effectiveStartDate = subtractWorkingDays(new Date(earliestPinnedDate), cumulativeDays)
+          .toISOString()
+          .split("T")[0];
+      } else {
+        // Pinned milestone is the flow's opener (or not in the flow): its date IS the start.
+        effectiveStartDate = earliestPinnedDate;
+      }
     }
   }
   if (!effectiveStartDate) {
@@ -1424,8 +1478,27 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
     staleCodeDateKeys.get(code)!.push(k);
   });
 
+  // Same pinned-milestone map as above ({code -> dateKey}), reshaped to calculateAutoSchedule's
+  // {dateKey -> {dateKey, val, code}} so its forward walk can re-anchor "current" onto the REAL
+  // pinned date at/after each pinned step instead of drifting off its own lead-time-only math.
+  const pinnedEventsMap: Record<string, { dateKey: string; val: string; code: string }> = {};
+  Object.entries(pinnedDateByCode).forEach(([code, dateKey]) => {
+    const val = row[dateKey];
+    if (typeof val === "string" && val.trim()) {
+      pinnedEventsMap[dateKey] = { dateKey, val, code };
+    }
+  });
+
   const triggerBrand = String(row.col3 || row.col7 || "");
-  const scheduleMap = calculateAutoSchedule(effectiveStartDate, matchedFlow, eventSuffix, triggerBrand, failedEventsMap, row.col11);
+  const scheduleMap = calculateAutoSchedule(
+    effectiveStartDate,
+    matchedFlow,
+    eventSuffix,
+    triggerBrand,
+    failedEventsMap,
+    row.col11,
+    pinnedEventsMap,
+  );
 
   // If this row is one stage of a multi-plant PLANT FLOW chain (e.g. "LEEMA>BFL>RICHCOLOR"),
   // the FULL sequence's dates are still calculated above (the lead-time math has to account for
@@ -1483,7 +1556,7 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
 
     if (preserved) {
       const preservedBase = preserved.code.split("-")[0].toUpperCase();
-      if (valBase === preservedBase || valBase.startsWith(preservedBase) || preservedBase.startsWith(valBase)) {
+      if (codeMatchesSlot(valBase, preservedBase)) {
         updatedRow[dateKey] = preserved.val;
       } else {
         updatedRow[dateKey] = val;
