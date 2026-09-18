@@ -82,12 +82,12 @@ export default function RowDetailsModal({ isOpen, onClose, row, columns, onUpdat
     onClose();
   };
 
-  // Sort keys logically based on the numeric part of "colX"
-  const sortedColKeys = Object.keys(columns).sort((a, b) => {
-    const numA = parseInt(a.replace("col", "")) || 0;
-    const numB = parseInt(b.replace("col", "")) || 0;
-    return numA - numB;
-  });
+  // Sort keys logically based on the numeric part of "colX". col49 ("2nd Submission Fabric") is
+  // pinned right after col16 ("Alternative Fabric") instead of its real, much-higher column
+  // number — otherwise it'd land at the very bottom of the form, far from the 1st-submission
+  // fabric field it's meant to sit beside, and the planner would never find it.
+  const colSortRank = (key: string): number => (key === "col49" ? 16.5 : parseInt(key.replace("col", "")) || 0);
+  const sortedColKeys = Object.keys(columns).sort((a, b) => colSortRank(a) - colSortRank(b));
 
   // Strike-Off status helpers
   const comment1 = String(editForm?.col22 || "").trim();

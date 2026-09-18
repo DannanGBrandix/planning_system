@@ -344,6 +344,7 @@ export default function Table({
     "col16", // Alternative Fabric
     "col18", // Technique Category
     "col27", // S-Off Requirement
+    "col49", // 2nd Submission Fabric
   ]), []);
 
   // Enforce role-based cell editing rules

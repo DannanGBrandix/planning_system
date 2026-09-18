@@ -606,6 +606,12 @@ export const DEFAULT_COLUMNS: ColumnMapping = {
   // Edit Row modal. Like col40-col46 it needs no schema migration — any col number
   // above col33 routes through the `schedule` JSONB column automatically.
   col48: "Buy",
+  // Fabric used on the 2ND submission specifically — same free-text convention as col16
+  // ("Alternative Fabric"): blank = went out on the actual fabric, filled = the alternative
+  // fabric reference used. Needed because col16 alone only records ONE fabric decision for the
+  // whole row, but a combo commonly goes out on Alternative for the 1st submission and Actual
+  // for the 2nd (or vice versa) — col16 stays the 1st submission's answer, this is the 2nd's.
+  col49: "2nd Submission Fabric",
 };
 
 // Seed Mock Data in server

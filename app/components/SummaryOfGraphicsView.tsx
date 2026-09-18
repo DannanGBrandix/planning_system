@@ -171,7 +171,14 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
         // col16 ("Alternative Fabric") is only filled in when the graphic was sent using an
         // alternative fabric instead of the actual one — an empty col16 means it went out on
         // the actual fabric, same signal the Dashboard's own Alternative Fabric column uses.
+        // That's the 1st submission's fabric decision only. A combo frequently goes out on
+        // Alternative for the 1st submission and Actual for the 2nd (or vice versa), so the 2nd
+        // submission gets its own field (col49, same blank=Actual/filled=Alternative convention)
+        // instead of overwriting col16 — otherwise the 1st submission's fabric type would be
+        // lost. The 2nd column only shows a value once a 2nd submission actually went out
+        // (awb2Raw present); before that there's nothing to report yet.
         const alternativeFabricRaw = String(r.col16 || "").trim();
+        const secondAlternativeFabricRaw = String(r.col49 || "").trim();
         return {
           row: r,
           status,
@@ -183,6 +190,8 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
           season: String(r.col4 || "").trim(),
           fabricType: alternativeFabricRaw ? "Alternative" : "Actual",
           alternativeFabricRaw,
+          secondFabricType: awb2Raw ? (secondAlternativeFabricRaw ? "Alternative" : "Actual") : null,
+          secondAlternativeFabricRaw,
           awrRaw: String(r.col26 || "").trim(),
           approvedRaw,
           approvedDateIso,
@@ -277,7 +286,8 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
     "Combo #",
     "Category",
     "Season",
-    "Fabric Type",
+    "1st S/Off Fabric",
+    "2nd S/Off Fabric",
     "AWR Date",
     "1st S/Off Sent",
     "2nd S/Off Sent",
@@ -329,6 +339,7 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
           sr.category,
           sr.season,
           sr.fabricType,
+          sr.secondFabricType || "",
           sr.awrRaw ? formatDateDDMMYYYY(sr.awrRaw) || sr.awrRaw : "",
           sr.awb1DateIso ? formatDateDDMMYYYY(sr.awb1DateIso) : sr.awb1Raw,
           sr.awb2DateIso ? formatDateDDMMYYYY(sr.awb2DateIso) : sr.awb2Raw,
@@ -534,7 +545,8 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
                 <th className="px-4 py-3">Combo #</th>
                 <th className="px-4 py-3">Category</th>
                 <th className="px-4 py-3">Season</th>
-                <th className="px-4 py-3">Fabric Type</th>
+                <th className="px-4 py-3">1st S/Off Fabric</th>
+                <th className="px-4 py-3">2nd S/Off Fabric</th>
                 <th className="px-4 py-3">AWR Date</th>
                 <th className="px-4 py-3">1st S/Off Sent</th>
                 <th className="px-4 py-3">2nd S/Off Sent</th>
@@ -573,6 +585,21 @@ export default function SummaryOfGraphicsView({ rows, onUpdateRow }: SummaryOfGr
                     >
                       {sr.fabricType}
                     </span>
+                  </td>
+                  <td className="px-4 py-3" title={sr.secondAlternativeFabricRaw || undefined}>
+                    {sr.secondFabricType ? (
+                      <span
+                        className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                          sr.secondFabricType === "Alternative"
+                            ? "bg-purple-500/10 text-purple-300 border-purple-500/30"
+                            : "bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                        }`}
+                      >
+                        {sr.secondFabricType}
+                      </span>
+                    ) : (
+                      <span className="text-zinc-400 dark:text-zinc-600">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-zinc-700 dark:text-zinc-300">
                     {sr.awrRaw ? formatDateDDMMYYYY(sr.awrRaw) || sr.awrRaw : "—"}
