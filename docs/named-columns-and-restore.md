@@ -53,6 +53,19 @@ fields as normal columns for browsing in the Supabase Table Editor.
 - Real-server check against the new project: GET /api/rows returned 4,911 rows identical to the backup (255,908 values), cache HIT/MISS working; sign-in settings match the old project (Confirm email ON, signups on).
 - Login user created by hand in the new project (Authentication -> Users, Auto Confirm) — the first login auto-grants Planner.
 
+## TEST database (2026-09-19)
+
+- Test project: `https://wetaazteocnpkkciemvw.supabase.co` (same new account, Singapore, free plan). Schema from `supabase_named.sql`.
+- Loaded with an export of the NEW prod taken the same day (`D:\Brandix\newprod_export_2026-09-19`, made with `npm run db:export`): 4,918 rows, 21,306 audit logs, 20 snapshots, all config — 350k+ values compared, 0 differences. Real-server check against it returned 4,895 usable rows identical to the export.
+- `npm run use:test` -> new test project; `npm run use:oldtest` -> the previous test project (old account, legacy columns); `npm run use:prod` -> production. ALWAYS check the "Active Database Mode" line in server/.env (or the server log) before testing anything destructive, and `npm run use:prod` when done.
+- The free plan allows 2 active projects per Supabase ACCOUNT: prod + test now use both slots.
+- Login users are per project: create the user in Authentication -> Users (Auto Confirm) for each project.
+- Google Sheet Script Properties: SUPABASE_URL_TEST / SUPABASE_KEY_TEST = the test URL/key above; DB_MODE picks which one the sheet uses.
+
+## Backups (free plan has none)
+
+`npm run db:export` (server/export_database.js) writes a full read-only export of the ACTIVE database to `D:\Brandix\db_backups\<ref>_<date>`; rows are normalized to col1..col33 so an export of a named DB restores into either style with `restore_from_export.js`. Run it regularly and copy the folder somewhere safe.
+
 ## Restoring the PROD backup into the new project
 
 1. New project → SQL Editor → run `server/supabase_named.sql` (if the OLD `supabase.sql` was already run there,

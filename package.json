@@ -14,7 +14,8 @@
     "sync:watch": "node server/sync.js",
     "seed:codes": "node server/seed_codes.js",
     "ck:login": "node server/ckAuth.js",
-    "dev:all": "concurrently \"next dev\" \"node server/index.js\""
+    "dev:all": "concurrently \"next dev\" \"node server/index.js\"",
+    "db:export": "node server/export_database.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
