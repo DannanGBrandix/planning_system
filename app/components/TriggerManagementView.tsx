@@ -85,7 +85,7 @@ export default function TriggerManagementView({
     await applyRowsBulk(`Applying AOQ dates to ${perCombo.length} Category+Season combo(s)`, allPatched);
   };
 
-  // Season AOQ dates — the fallback deadline Plant Performance uses when a row's own Trigger
+  // Season AOQ dates — the fallback deadline Score Card uses when a row's own Trigger
   // carries no date (col20 blank, and the trigger text isn't an M.D code like "4.7"). Every
   // season needs its own AOQ per category — PINK's SU27 date isn't VS's SU27 date, and CK runs
   // its own calendar entirely — so this is keyed on Category+Season, not on Season alone.
@@ -323,7 +323,7 @@ export default function TriggerManagementView({
             One date per Category + Season — PINK, VS and CK each run their own AOQ calendar
             even within the same season. Saving a date here writes it onto col20 (AOQ Date) of
             every matching row on the Dashboard right away, overwriting whatever was there —
-            it&apos;s also the fallback Plant Performance uses when a row&apos;s Trigger has no
+            it&apos;s also the fallback Score Card uses when a row&apos;s Trigger has no
             date of its own (e.g. &quot;KNIT&quot;, &quot;COMPLETE&quot;).
             {!canManage && " — read-only for your role"}
           </p>

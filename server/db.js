@@ -753,7 +753,7 @@ module.exports = {
   },
 
   // Season AOQ dates — { "<CATEGORY>|||<SEASON>": "YYYY-MM-DD" }. Fallback deadline used by
-  // Plant Performance when a row's Trigger has no date of its own (col20 blank and the trigger
+  // Score Card when a row's Trigger has no date of its own (col20 blank and the trigger
   // text doesn't parse as an M.D code).
   //
   // Stored as its own row (id "season_aoq") in the existing columns_config table rather than a
@@ -794,7 +794,7 @@ module.exports = {
   //
   // Stored as its own row (id "plant_aliases") in columns_config for the same reason as
   // getSeasonAoq above — plant_aliases_config was never actually created in production, which is
-  // why the Plant Performance "Hide"/"Merge" buttons looked like they worked but didn't persist.
+  // why the Score Card "Hide"/"Merge" buttons looked like they worked but didn't persist.
   async getPlantAliases() {
     await ensureDb();
     if (useSupabase && supabase) {

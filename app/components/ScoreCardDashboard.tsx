@@ -15,7 +15,7 @@ import {
   ResponsiveContainer, Line, ComposedChart,
 } from "recharts";
 
-interface PlantPerformanceDashboardProps {
+interface ScoreCardDashboardProps {
   rows: EmbellishmentRow[];
   onUpdateRow: (row: EmbellishmentRow) => void | Promise<void>;
   currentRole?: string;
@@ -130,7 +130,7 @@ interface PlantAgg {
   graphics: GraphicPerf[];
 }
 
-export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRole }: PlantPerformanceDashboardProps) {
+export default function ScoreCardDashboard({ rows, onUpdateRow, currentRole }: ScoreCardDashboardProps) {
   const canManagePlants = currentRole === "Planner" || currentRole === "Management";
   const [season, setSeason] = useState<string>("all");
   const [category, setCategory] = useState<string>("all");
@@ -184,7 +184,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
   const handleDeletePlant = async (plant: string) => {
     if (!canManagePlants || plantBusy || plant === "(unassigned)") return;
     const ok = window.confirm(
-      `Hide plant "${plant}"?\n\nIt will no longer appear anywhere plants are grouped (Plant Performance, Plant Schedules, Fabric Dispatch). Row data (col11/col12) is untouched — this can be undone from here later.`,
+      `Hide plant "${plant}"?\n\nIt will no longer appear anywhere plants are grouped (Score Card, Plant Schedules, Fabric Dispatch). Row data (col11/col12) is untouched — this can be undone from here later.`,
     );
     if (!ok) return;
     setPlantBusy(true);
@@ -512,7 +512,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
                 .map((k) => [k, ""]),
             )
           : markNycVerdict(base, kind, iso);
-      await onUpdateRow({ ...targets[i], ...next, change_reason: "NY verdict set from Plant Performance" } as EmbellishmentRow);
+      await onUpdateRow({ ...targets[i], ...next, change_reason: "NY verdict set from Score Card" } as EmbellishmentRow);
       setBusy({ label: `Setting verdict for ${g.graphic}`, done: i + 1, total: targets.length });
     }
     setBusy(null);
@@ -666,7 +666,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
       <div className="px-6 pt-8 pb-4 border-b border-zinc-800/60">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <h1 className="text-3xl font-black tracking-tight">🏭 Plant Performance — AOQ Approval</h1>
+            <h1 className="text-3xl font-black tracking-tight">🏭 Score Card — AOQ Approval</h1>
             <p className="text-zinc-400 text-sm mt-1 font-medium">
               How many graphics reached each plant and got NY-approved (NYC-A) before the season&apos;s AOQ deadline.
               {season !== "all" ? ` · ${season}` : " · all seasons"}
@@ -829,7 +829,7 @@ export default function PlantPerformanceDashboard({ rows, onUpdateRow, currentRo
               <h3 className="text-sm font-bold text-white mb-1">Merge {selectedPlants.size} plants into one</h3>
               <p className="text-xs text-zinc-500 mb-3">
                 Every graphic currently grouped under any of the plants below will show up under the name you pick,
-                everywhere plants are grouped (Plant Performance, Plant Schedules, Fabric Dispatch). Row data
+                everywhere plants are grouped (Score Card, Plant Schedules, Fabric Dispatch). Row data
                 (col11/col12) is left exactly as-is.
               </p>
               <div className="flex flex-col gap-1.5 mb-3">

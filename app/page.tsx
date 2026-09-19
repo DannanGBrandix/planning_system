@@ -58,7 +58,7 @@ import CkSyncButton from "./components/CkSyncButton";
 import ActionCenterView from "./components/ActionCenterView";
 import GlobalSidebar from "./components/GlobalSidebar";
 import PlantSchedulesView from "./components/PlantSchedulesView";
-import PlantPerformanceDashboard from "./components/PlantPerformanceDashboard";
+import ScoreCardDashboard from "./components/ScoreCardDashboard";
 import FabricDispatchView from "./components/FabricDispatchView";
 import TriggerManagementView from "./components/TriggerManagementView";
 import ReportsView from "./components/ReportsView";
@@ -129,7 +129,7 @@ export default function Home() {
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [isDueTomorrowAlertOpen, setIsDueTomorrowAlertOpen] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<
-    "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics"
+    "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics"
   >("standard");
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
     useState<string>("");
@@ -5312,7 +5312,7 @@ export default function Home() {
   ]);
 
   // Same rows as displayedRows, but excluding archived (is_current: false) versions — for
-  // rollup/summary views (Advanced Analytics, Action Center, Plant Performance, Fabric Dispatch,
+  // rollup/summary views (Advanced Analytics, Action Center, Score Card, Fabric Dispatch,
   // Dashboard Stats, the SLA Watchlist bar, and the Due-Tomorrow alert) where an old version
   // replanned via handleForceReplan/handleUpdateRow would otherwise get double-counted alongside
   // its replacement — or, for the SLA/due-soon widgets specifically, wrongly surface an archived
@@ -5447,8 +5447,8 @@ export default function Home() {
                       ? "Reports"
                       : viewMode === "summaryOfGraphics"
                         ? "TNA Report"
-                        : viewMode === "plantPerformance"
-                          ? "Plant Performance"
+                        : viewMode === "scoreCard"
+                          ? "Score Card"
                           : viewMode === "plantSchedules"
                             ? "Plant Schedules"
                             : "Action Center"
@@ -5466,7 +5466,7 @@ export default function Home() {
                       ? "Export approval reports by Season and Category."
                       : viewMode === "summaryOfGraphics"
                         ? "AWR, S/Off, Approved, and Dropped dates by Category and Season — exportable to Excel."
-                        : viewMode === "plantPerformance"
+                        : viewMode === "scoreCard"
                           ? "AOQ-approval performance by plant — click a plant to merge, hide, or see its graphics."
                           : viewMode === "plantSchedules"
                             ? "Per-plant calendar of upcoming planning events."
@@ -5482,8 +5482,8 @@ export default function Home() {
               onUpdateRow={handleUpdateRow}
               currentRole={currentRole}
             />
-          ) : viewMode === "plantPerformance" ? (
-            <PlantPerformanceDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
+          ) : viewMode === "scoreCard" ? (
+            <ScoreCardDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
           ) : viewMode === "plantSchedules" ? (
             <PlantSchedulesView rows={currentVersionRows} />
           ) : viewMode === "fabricDispatch" ? (

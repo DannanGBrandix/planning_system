@@ -1,6 +1,6 @@
-# How Plant Performance Is Calculated (Plain-English Guide)
+# How Score Card Is Calculated (Plain-English Guide)
 
-This explains the numbers on the **Plant Performance** page — no code, just the logic.
+This explains the numbers on the **Score Card** page — no code, just the logic.
 
 ## The big idea
 

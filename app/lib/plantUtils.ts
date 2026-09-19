@@ -112,7 +112,7 @@ const CANONICAL_PLANTS: Record<string, string> = {
 
 // Runtime, user-managed plant aliases/exclusions — set once from Supabase on app load (see
 // applyPlantAliasConfig, called from page.tsx) so a planner can merge two plant spellings or
-// hide a bogus one from the Plant Performance / Plant Manager UI without a code change or
+// hide a bogus one from the Score Card / Plant Manager UI without a code change or
 // rewriting the raw col11/col12 text on every row. Layered ON TOP of the hardcoded
 // CANONICAL_PLANTS table above (checked first, so a user alias always wins).
 let RUNTIME_PLANT_ALIASES: Record<string, string> = {};
@@ -220,7 +220,7 @@ function leftoverIsPlant(leftover: string): boolean {
 // Names that show up in the PLANT / PLANT FLOW columns but are NOT tracked plants:
 //  - BFL / MARTEX / DYNAWASH are external dye/wash pass-through VENDORS (they drive the
 //    PPSDS->RDPS flow but never get their own planning row — see detectMatchingFlow /
-//    getEventsForChainStage), so they must not appear as plants in Plant Performance /
+//    getEventsForChainStage), so they must not appear as plants in Score Card /
 //    Plant Schedules.
 //  - short junk codes ("AD") the planner has confirmed aren't plants.
 const NON_TRACKED_PLANTS = new Set(["BFL", "MARTEX", "DYNAWASH", "AD"]);

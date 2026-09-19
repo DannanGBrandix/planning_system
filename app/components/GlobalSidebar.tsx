@@ -1,8 +1,8 @@
 import React from 'react';
 
 interface GlobalSidebarProps {
-  currentView: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics";
-  setViewMode: (mode: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics") => void;
+  currentView: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics";
+  setViewMode: (mode: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics") => void;
   onImportJSON: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportExcel: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportPlanningSheet: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -68,8 +68,8 @@ export default function GlobalSidebar({
       )
     },
     {
-      id: "plantPerformance",
-      label: "Plant Performance",
+      id: "scoreCard",
+      label: "Score Card",
       icon: (
         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -140,7 +140,7 @@ export default function GlobalSidebar({
                 return (
                   <button
                     key={item.id}
-                    onClick={() => setViewMode(item.id as "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics")}
+                    onClick={() => setViewMode(item.id as "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics")}
                     suppressHydrationWarning
                     className={`flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-semibold transition-all w-full text-left ${
                       isActive 

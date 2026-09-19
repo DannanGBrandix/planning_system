@@ -12,7 +12,7 @@
 //     -> parseCommentVerdict reads it automatically (the date right after the
 //     initials is the verdict date, NOT the later "S/O DATED x").
 //   - CK: no such wording, so a person sets it by hand (grid event picker writes a
-//     real "<date>" NYC-A/NYC-R cell; Daily Events Excel and the Plant Performance
+//     real "<date>" NYC-A/NYC-R cell; Daily Events Excel and the Score Card
 //     drill-down call markNycVerdict, which writes a "nycv:<date>" key).
 //
 // Storage: derived verdicts live on "nycv:<YYYY-MM-DD>" keys (value "NYC-A"/"NYC-R").
@@ -27,7 +27,7 @@ import { parseEventValue } from "./eventCodes";
 export const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 const NYCV_RE = /^nycv:(\d{4}-\d{2}-\d{2})$/;
 
-// ── shared date helpers (also used by PlantPerformanceDashboard) ────────────
+// ── shared date helpers (also used by ScoreCardDashboard) ────────────
 
 // "4.7/4.28" -> [[4,7],[4,28]] · "3/17" -> [[3,17]] · "5.26" -> [[5,26]] · Excel serial -> [[m,d]]
 export function parseTriggerMD(trigger: string): [number, number][] {
@@ -222,7 +222,7 @@ export function deriveNycVerdict<T extends Record<string, unknown>>(row: T): T {
   return out as T;
 }
 
-// Write a manual verdict (Daily Events Excel, Plant Performance drill-down).
+// Write a manual verdict (Daily Events Excel, Score Card drill-down).
 export function markNycVerdict<T extends Record<string, unknown>>(
   row: T,
   kind: "A" | "R",

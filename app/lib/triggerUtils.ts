@@ -108,7 +108,7 @@ export function isValidTriggerValue(s: unknown): boolean {
   return upper !== "N/A" && upper !== "-";
 }
 
-// Key format shared by the Trigger Manager's "Season AOQ Dates" table and Plant Performance's
+// Key format shared by the Trigger Manager's "Season AOQ Dates" table and Score Card's
 // AOQ fallback lookup (SeasonAoqMap from app/lib/db.ts) — a Trigger with no date of its own
 // (col20 blank, text doesn't parse as an M.D code) falls back to its Category+Season deadline,
 // since PINK/VS/CK each run their own AOQ calendar even within the same season.

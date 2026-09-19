@@ -490,7 +490,7 @@ export async function saveColumns(cols: ColumnMapping): Promise<void> {
 }
 
 // Season AOQ dates — { "<CATEGORY>|||<SEASON>": "YYYY-MM-DD" }. See triggerUtils.seasonAoqKey
-// for the key format both Trigger Manager and Plant Performance share.
+// for the key format both Trigger Manager and Score Card share.
 export type SeasonAoqMap = Record<string, string>;
 
 export async function getSeasonAoqConfig(): Promise<SeasonAoqMap> {
