@@ -466,11 +466,13 @@ export interface PlantDateTarget {
  *  - bare "<date>" key on a "/"-split cross-dev row -> every leg that hasn't diverged yet, each
  *    confirming against its own "<date>_<leg>" key, "+"-split into its individual plants
  *  - bare key on any other row -> the first plant only (unchanged)
- * Already pass/fail events are skipped (they need no confirmation).
+ * Already pass/fail events are skipped (they need no confirmation) unless `includeVerdicts` is set —
+ * the Plant Performance page needs exactly those, to score the plant that owned a green/red event.
  */
 export function resolvePlantDateTargets(
   row: Record<string, unknown>,
   isoDate: string,
+  opts?: { includeVerdicts?: boolean },
 ): PlantDateTarget[] {
   const legs = crossDevLegNames(row);
   const out: PlantDateTarget[] = [];
@@ -489,7 +491,7 @@ export function resolvePlantDateTargets(
     const suffix = m[2] || "";
     const rawValue = String((row as Record<string, unknown>)[key] || "");
     const parsed = parseEventValue(rawValue);
-    if (!parsed || parsed.status !== "planned") return;
+    if (!parsed || (parsed.status !== "planned" && !opts?.includeVerdicts)) return;
 
     if (suffix) {
       splitLegPlants(suffix).forEach((p) =>

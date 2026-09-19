@@ -1,8 +1,8 @@
 import React from 'react';
 
 interface GlobalSidebarProps {
-  currentView: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics";
-  setViewMode: (mode: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics") => void;
+  currentView: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics";
+  setViewMode: (mode: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics") => void;
   onImportJSON: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportExcel: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportPlanningSheet: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -78,6 +78,15 @@ export default function GlobalSidebar({
       )
     },
     {
+      id: "plantPerformance",
+      label: "Plant Performance",
+      icon: (
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+        </svg>
+      )
+    },
+    {
       id: "fabricDispatch",
       label: "Fabric Dispatch",
       icon: (
@@ -140,7 +149,7 @@ export default function GlobalSidebar({
                 return (
                   <button
                     key={item.id}
-                    onClick={() => setViewMode(item.id as "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics")}
+                    onClick={() => setViewMode(item.id as "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics")}
                     suppressHydrationWarning
                     className={`flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-semibold transition-all w-full text-left ${
                       isActive 

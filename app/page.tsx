@@ -59,6 +59,7 @@ import ActionCenterView from "./components/ActionCenterView";
 import GlobalSidebar from "./components/GlobalSidebar";
 import PlantSchedulesView from "./components/PlantSchedulesView";
 import ScoreCardDashboard from "./components/ScoreCardDashboard";
+import PlantPerformanceView from "./components/PlantPerformanceView";
 import FabricDispatchView from "./components/FabricDispatchView";
 import TriggerManagementView from "./components/TriggerManagementView";
 import ReportsView from "./components/ReportsView";
@@ -129,7 +130,7 @@ export default function Home() {
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [isDueTomorrowAlertOpen, setIsDueTomorrowAlertOpen] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<
-    "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics"
+    "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics"
   >("standard");
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
     useState<string>("");
@@ -5449,7 +5450,9 @@ export default function Home() {
                         ? "TNA Report"
                         : viewMode === "scoreCard"
                           ? "Score Card"
-                          : viewMode === "plantSchedules"
+                          : viewMode === "plantPerformance"
+                            ? "Plant Performance"
+                            : viewMode === "plantSchedules"
                             ? "Plant Schedules"
                             : "Action Center"
           }
@@ -5468,7 +5471,9 @@ export default function Home() {
                         ? "AWR, S/Off, Approved, and Dropped dates by Category and Season — exportable to Excel."
                         : viewMode === "scoreCard"
                           ? "AOQ-approval performance by plant — click a plant to merge, hide, or see its graphics."
-                          : viewMode === "plantSchedules"
+                          : viewMode === "plantPerformance"
+                            ? "Monthly PPS performance by plant — green PPS earns points, red PPS loses them."
+                            : viewMode === "plantSchedules"
                             ? "Per-plant calendar of upcoming planning events."
                             : "Quickly resolve missing data for new imports."
           }
@@ -5484,6 +5489,8 @@ export default function Home() {
             />
           ) : viewMode === "scoreCard" ? (
             <ScoreCardDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
+          ) : viewMode === "plantPerformance" ? (
+            <PlantPerformanceView rows={allCurrentVersionRows} />
           ) : viewMode === "plantSchedules" ? (
             <PlantSchedulesView rows={currentVersionRows} />
           ) : viewMode === "fabricDispatch" ? (
