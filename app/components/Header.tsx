@@ -1,6 +1,7 @@
 import React from "react";
 import { createSupabaseClient } from "../utils/supabase/client";
 import DailyPlanMailButton from "./DailyPlanMailButton";
+import type { RowsSyncInfo } from "../lib/db";
 
 interface HeaderProps {
   currentRole: string;
@@ -10,9 +11,70 @@ interface HeaderProps {
   onOpenBackups?: () => void;
   pendingUpdatesCount?: number;
   ckSyncSlot?: React.ReactNode;
+  // How the last load of the table was served (server cache HIT/MISS/STALE, or a failure) plus a
+  // "Refresh now" action that bypasses the server cache. See getLastRowsSync in lib/db.ts.
+  rowsSync?: RowsSyncInfo | null;
+  onRefreshNow?: () => void;
+  isRefreshingNow?: boolean;
 }
 
 const PLANT_UPDATE_ROLES = ["Planner", "Admin", "Management"];
+
+const clock = (ms: number) =>
+  new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+const CACHE_EXPLAINED: Record<string, string> = {
+  HIT: "Served from the server's memory copy (no database read). Every save made in this app updates that copy immediately.",
+  MISS: "The server re-read the table from the database for this load (first load, after a save, or the 5-minute refresh).",
+  WAIT: "Another load was already re-reading the database, so this one shared that result.",
+};
+
+// Shows whether the data on screen came from the server cache or the database, and warns when it
+// might not be current. Amber = database unreachable, server sent its last saved copy.
+// Red = the last refresh failed, the table on screen is from the last successful load.
+function RowsSyncChip({
+  sync,
+  onRefreshNow,
+  refreshing,
+}: {
+  sync: RowsSyncInfo;
+  onRefreshNow?: () => void;
+  refreshing?: boolean;
+}) {
+  let tone = "text-emerald-600 dark:text-emerald-400 border-emerald-500/30 bg-emerald-500/10";
+  let dot = "bg-emerald-500";
+  let label = `Synced ${clock(sync.at)} · cache ${sync.cache}`;
+  let title = CACHE_EXPLAINED[sync.cache] || "Data loaded from the server.";
+  if (!sync.ok) {
+    tone = "text-rose-600 dark:text-rose-400 border-rose-500/40 bg-rose-500/10";
+    dot = "bg-rose-500";
+    label = `Refresh failed ${clock(sync.at)}${sync.lastGoodAt ? ` · showing data from ${clock(sync.lastGoodAt)}` : ""}`;
+    title = `The last refresh failed (${sync.error || "unknown error"}). The table shows the last data that loaded successfully. Use Refresh now to retry.`;
+  } else if (sync.cache === "STALE") {
+    tone = "text-amber-600 dark:text-amber-400 border-amber-500/40 bg-amber-500/10";
+    dot = "bg-amber-500";
+    label = `Old copy · database unreachable · ${clock(sync.at)}`;
+    title = "The database could not be reached, so the server sent the last copy it had saved. Recent changes made elsewhere may be missing until the connection is back. Use Refresh now to retry.";
+  }
+  return (
+    <div className={`flex items-center gap-2 pl-3 pr-1 py-1 rounded-xl border text-xs font-bold ${tone}`} title={title}>
+      <span className={`w-2 h-2 rounded-full ${dot}`} />
+      <span suppressHydrationWarning>{label}</span>
+      {onRefreshNow && (
+        <button
+          onClick={onRefreshNow}
+          disabled={refreshing}
+          className="p-1.5 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-60 transition-all"
+          title="Refresh now — skips the server cache and reads straight from the database"
+        >
+          <svg className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function Header({
   currentRole,
@@ -22,6 +84,9 @@ export default function Header({
   onOpenBackups,
   pendingUpdatesCount = 0,
   ckSyncSlot,
+  rowsSync,
+  onRefreshNow,
+  isRefreshingNow,
 }: HeaderProps) {
   const showPlantUpdates = !currentRole || PLANT_UPDATE_ROLES.includes(currentRole);
   return (
@@ -42,6 +107,10 @@ export default function Header({
 
         {/* Right side Profile */}
         <div className="flex items-center gap-4">
+
+          {rowsSync && (
+            <RowsSyncChip sync={rowsSync} onRefreshNow={onRefreshNow} refreshing={isRefreshingNow} />
+          )}
 
           <DailyPlanMailButton />
 

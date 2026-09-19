@@ -36,6 +36,8 @@ import {
   CkChartStatus,
   derivePlanStatus,
   isExcludedFromAdvancedAnalytics,
+  getLastRowsSync,
+  RowsSyncInfo,
 } from "./lib/db";
 import Table from "./components/Table";
 import ColumnConfigModal from "./components/ColumnConfigModal";
@@ -325,6 +327,11 @@ export default function Home() {
   const [selectedTeamFilter, setSelectedTeamFilter] =
     useState<string>("All Teams");
 
+  // How the last load of the table was served (server cache HIT/MISS/STALE, or a failure) — shown as
+  // a chip in the header so a stale or failed refresh is never silent.
+  const [rowsSync, setRowsSync] = useState<RowsSyncInfo | null>(null);
+  const [isRefreshingNow, setIsRefreshingNow] = useState<boolean>(false);
+
   // Initial database load
   useEffect(() => {
     async function loadData() {
@@ -333,6 +340,7 @@ export default function Home() {
 
         // Fetch rows, columns and audit logs
         const rawRows = await getAllRows(currentRole);
+        setRowsSync(getLastRowsSync());
         const loadedRows = rawRows;
         const loadedCols = await getColumns();
 
@@ -352,10 +360,12 @@ export default function Home() {
     loadData();
   }, [currentRole]);
 
-  // Helper to re-fetch all rows from the database (used after publish + periodic polling)
-  const refreshRows = async () => {
+  // Helper to re-fetch all rows from the database (used after publish + periodic polling).
+  // `fresh` = bypass the server's cache and read the database (the header's "Refresh now").
+  const loadRowsIntoState = async (fresh: boolean) => {
     try {
-      const rawRows = await getAllRows(currentRole);
+      const rawRows = await getAllRows(currentRole, { fresh });
+      setRowsSync(getLastRowsSync());
       // An import (or its pre-import backup + post-import re-fetch) can take well over 15
       // seconds against a large database — long enough for this poll to fire mid-import, or for
       // a poll request already in flight to resolve AFTER the import's own, more current, result
@@ -367,17 +377,40 @@ export default function Home() {
       // request that started just before the import began but resolves mid-import is still
       // caught.
       if (isImportSyncingRef.current) return;
-      setRows(rawRows);
+      // getAllRows() swallows every failure (network error, Supabase 402 after the quota, server
+      // down) and returns [] — indistinguishable from a genuinely empty table. Never let a failed
+      // background refresh blank the table the planner is looking at.
+      setRows((prev) => (rawRows.length === 0 && prev.length > 0 ? prev : rawRows));
     } catch (err) {
       // Use console.warn instead of console.error to avoid Next.js full-screen error overlays for background network polling issues
       console.warn("Error refreshing rows:", err);
     }
   };
+  const refreshRows = () => loadRowsIntoState(false);
+  const refreshRowsFresh = async () => {
+    setIsRefreshingNow(true);
+    try {
+      await loadRowsIntoState(true);
+    } finally {
+      setIsRefreshingNow(false);
+    }
+  };
 
-  // Planner: auto-poll every 15 seconds to pick up newly published rows from all teams
+  // Planner: auto-poll every 15 seconds to pick up newly published rows from all teams.
+  // Skipped while the tab is hidden (nobody is looking at it — a forgotten background tab used to
+  // keep pulling the whole table all night); catches up the moment the tab is shown again. The
+  // server serves these polls from an in-memory cache (server/db.js), so a visible poll no longer
+  // costs Supabase egress either.
   useEffect(() => {
     if (currentRole !== "Planner") return;
-    const interval = setInterval(refreshRows, 15000);
+    const interval = setInterval(() => {
+      if (document.hidden) return;
+      refreshRows();
+    }, 15000);
+    const onVisible = () => {
+      if (!document.hidden) refreshRows();
+    };
+    document.addEventListener("visibilitychange", onVisible);
 
     // Also do an immediate refresh when switching to Planner role
     // Wrap in async function to avoid synchronous setState warning in effect
@@ -386,7 +419,10 @@ export default function Home() {
     };
     initRefresh();
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRole]);
 
@@ -553,7 +589,6 @@ export default function Home() {
       const hasFS = existingDateValues.some((v) => v.includes("FS"));
       const hasFR = existingDateValues.some((v) => v.includes("FR"));
       const hasPPS = existingDateValues.some((v) => v.includes("PPS"));
-      const hasNY = existingDateValues.some((v) => v.includes("NY"));
       const hasDuplicateFR = existingDateValues.filter((v) => v.includes("FR")).length > 1;
 
       const hasDyePills = existingDateValues.some((v) => v.includes("PPSDS") || v.includes("RDPS"));
@@ -661,7 +696,7 @@ export default function Home() {
         hasFailedEvent ||
         hasNoScheduleAtAll ||
         ((hasFR || r.col14) &&
-          (!hasPPS || !hasNY || hasDuplicateFR || !hasFS || hasInvalidDyePills || hasInvalidCutPanelPills))
+          (!hasPPS || hasDuplicateFR || !hasFS || hasInvalidDyePills || hasInvalidCutPanelPills))
       ) {
         needsUpdate = true;
         const scheduled = autoScheduleEmbellishmentRow(r);
@@ -4716,6 +4751,8 @@ export default function Home() {
                 bareInput,
                 undefined,
                 legStart,
+                "S",
+                { skipNyNyc: true },
               ) as Record<string, unknown>;
               // Clear any stale keys for this leg, then write the fresh plan under "<date>_<leg>".
               Object.keys(row).forEach((k) => {
@@ -4741,7 +4778,13 @@ export default function Home() {
           if (hasExistingEvents) return row as EmbellishmentRow;
 
           if (forceReplan || neededResolution) {
-            return autoScheduleEmbellishmentRow(row, undefined, planStart || undefined) as EmbellishmentRow;
+            return autoScheduleEmbellishmentRow(
+              row,
+              undefined,
+              planStart || undefined,
+              "S",
+              { skipNyNyc: true },
+            ) as EmbellishmentRow;
           }
           return row as EmbellishmentRow;
         });
@@ -5372,6 +5415,9 @@ export default function Home() {
           currentRole={currentRole}
           userEmail={userEmail}
           pendingUpdatesCount={pendingUpdatesCount}
+          rowsSync={rowsSync}
+          onRefreshNow={refreshRowsFresh}
+          isRefreshingNow={isRefreshingNow}
           onOpenBackups={() => setIsBackupsModalOpen(true)}
           ckSyncSlot={
             <CkSyncButton

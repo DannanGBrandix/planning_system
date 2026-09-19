@@ -1316,7 +1316,13 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   row: T,
   flowId?: number,
   startDateStr?: string,
-  eventSuffix: "S" | "F" | "T" = "S"
+  eventSuffix: "S" | "F" | "T" = "S",
+  // skipNyNyc: drop NY/NYC from the flow regardless of Graphic Type — used only for the
+  // brand-new-row scheduling that runs right after a tracking-chart import (Import Excel /
+  // Planning Sheet / CK Tracking Chart), per the planner: an import shouldn't stamp NY/NYC
+  // submission dates in on its own, only the milestones up to PPS. Manual scheduling (Auto-
+  // Schedule button, Replan, Apply Flow, the Event Status Panel) is untouched and keeps NY/NYC.
+  options?: { skipNyNyc?: boolean }
 ): T {
   // STRICT GATE: a row gets planning events ONLY when it has BOTH a real Plant and a real S-Off
   // Requirement (hasCompleteAllocationContext). No S-Off Requirement -> no planning events, full
@@ -1353,10 +1359,13 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   });
   const pinnedKeys = new Set(Object.values(pinnedDateByCode));
 
-  const matchedFlow = flowId
+  let matchedFlow = flowId
     ? applyGraphicTypeSkip(row, PLANNING_FLOWS.find((f) => f.id === flowId) || detectMatchingFlow(row))
     : detectMatchingFlow(row);
-  
+  if (options?.skipNyNyc) {
+    matchedFlow = stripNyNyc(matchedFlow);
+  }
+
   // Start date is always "as soon as possible" — the next working day — once a row's allocation
   // data is complete, full stop. This used to also check Fabric In Date (col14) / Ready Date
   // (col28) and push the start out to whichever of those was a future date, on the theory that an

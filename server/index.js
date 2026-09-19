@@ -14,7 +14,7 @@ app.use(
     origin: "*", // Allow all origins for dev simplicity, restrict in production
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    exposedHeaders: ["Content-Disposition", "X-CK-Category"],
+    exposedHeaders: ["Content-Disposition", "X-CK-Category", "X-Rows-Cache"],
   })
 );
 
@@ -26,6 +26,15 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 );
 
+// Every /api request used to make 3 Supabase calls here (auth.getUser, a user_roles select, and a
+// user_roles UPSERT for every Planner) — ~4,300 calls/day from one open tab. The resolved
+// token -> { userId, role } is now cached for a minute, and the auto-grant upsert only happens when
+// the user genuinely has no role row yet (previously it also re-wrote existing Planners on every
+// request, and would have overwritten a real role with "Planner" if the select happened to fail).
+const AUTH_CACHE_TTL_MS = 60 * 1000;
+const AUTH_CACHE_MAX = 200;
+const authCache = new Map(); // token -> { userId, role, at }
+
 const authMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -34,32 +43,45 @@ const authMiddleware = async (req, res, next) => {
 
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.split(" ")[1];
-      const { data, error } = await supabase.auth.getUser(token);
-      
-      if (!error && data?.user) {
-        userId = data.user.id;
-        // Get user role
-        const { data: roleData, error: roleError } = await supabase
-          .from("user_roles")
-          .select("role")
-          .eq("user_id", userId)
-          .single();
+      const cached = authCache.get(token);
+      if (cached && Date.now() - cached.at < AUTH_CACHE_TTL_MS) {
+        userId = cached.userId;
+        userRole = cached.role;
+      } else {
+        const { data, error } = await supabase.auth.getUser(token);
 
-        if (!roleError && roleData) {
-          userRole = roleData.role;
+        if (!error && data?.user) {
+          userId = data.user.id;
+          // Get user role
+          const { data: roleData, error: roleError } = await supabase
+            .from("user_roles")
+            .select("role")
+            .eq("user_id", userId)
+            .single();
+
+          let resolved = false;
+          if (!roleError && roleData) {
+            userRole = roleData.role;
+            resolved = true;
+          } else if (roleError && roleError.code === "PGRST116") {
+            // No role row yet -> auto-grant Planner (existing behaviour), best-effort.
+            resolved = true;
+            try {
+              await supabase.from("user_roles").upsert({ user_id: userId, role: "Planner" });
+            } catch (e) {
+              console.warn("Could not upsert role to Supabase, continuing locally.");
+            }
+          }
+
+          // Only cache a definite answer — never a transient failure that fell back to "Planner".
+          if (resolved) {
+            if (authCache.size >= AUTH_CACHE_MAX) authCache.delete(authCache.keys().next().value);
+            authCache.set(token, { userId, role: userRole, at: Date.now() });
+          }
         }
       }
     }
 
-    // Bypass the auto-grant if Supabase is unreachable, just use the local role
-    try {
-      if (userRole === "Planner" && userId !== "local-dev-user") {
-        await supabase.from("user_roles").upsert({ user_id: userId, role: "Planner" });
-      }
-    } catch (e) {
-      console.warn("Could not upsert role to Supabase, continuing locally.");
-    }
-    
     req.userRole = userRole;
 
     // Enforce read-only access
@@ -159,7 +181,18 @@ app.get("/api/rows", async (req, res) => {
     const isTeamRole = teamParam.startsWith("Team");
     const teamOwner = isTeamRole ? teamParam : null;
 
-    const rows = await db.getAllRows(teamOwner);
+    // ?fresh=1 = the "Refresh now" button: skip the cache and re-read Supabase. Throttled to one
+    // forced re-read per 5 s so a button-masher (or a bug) can't turn it back into constant polling.
+    if (req.query.fresh) {
+      const last = db.getRowsCacheStats().lastRefill;
+      if (!last || Date.now() - Date.parse(last.at) > 5000) db.invalidateRowsCache();
+    }
+
+    // X-Rows-Cache: HIT (from memory) | MISS (this request re-read Supabase) | WAIT (shared a
+    // refill already running) | STALE (Supabase failed, old copy served). Shown in the app header
+    // and in the browser's DevTools -> Network tab. Only MISS / STALE-retries cost Supabase egress.
+    const { rows, cache } = await db.getAllRowsWithMeta(teamOwner);
+    res.set("X-Rows-Cache", cache);
     res.json(rows);
   } catch (err) {
     console.error("Error in GET /api/rows:", err);
@@ -167,9 +200,23 @@ app.get("/api/rows", async (req, res) => {
   }
 });
 
+// Live rows-cache counters (hits / misses / cache age / last refill). Open it in a browser:
+//   http://localhost:5001/api/rows-cache
+app.get("/api/rows-cache", (req, res) => {
+  res.json(db.getRowsCacheStats());
+});
+
+// A row is a single JSON object. An array body (e.g. `PUT /api/rows/bulk` with a list of rows) gets
+// spread into keys "0","1",… by saveRow and stored as one huge junk row — that's how the 919 KB
+// `id = "bulk"` row in production was created. Reject it instead.
+const isRowObject = (body) => body && typeof body === "object" && !Array.isArray(body);
+
 // 2. Create Row
 app.post("/api/rows", async (req, res) => {
   try {
+    if (!isRowObject(req.body)) {
+      return res.status(400).json({ error: "Body must be a single row object (use POST /api/rows/bulk for many)." });
+    }
     const saved = await db.saveRow(req.body);
     res.status(201).json(saved);
   } catch (err) {
@@ -181,6 +228,9 @@ app.post("/api/rows", async (req, res) => {
 // 3. Update Row
 app.put("/api/rows/:id", async (req, res) => {
   try {
+    if (!isRowObject(req.body) || req.params.id === "bulk") {
+      return res.status(400).json({ error: "Body must be a single row object (use POST /api/rows/bulk for many)." });
+    }
     const row = { ...req.body, id: req.params.id };
     const saved = await db.saveRow(row);
     res.json(saved);
@@ -555,6 +605,13 @@ app.post("/api/reset", async (req, res) => {
     console.error("Error in POST /api/reset:", err);
     res.status(500).json({ error: "Failed to reset database: " + err.message });
   }
+});
+
+// The CK duplicate-cleanup below writes to `rows` through its own Supabase client, bypassing db.js,
+// so it has to drop the rows cache itself once it has run (see the cache notes in db.js).
+app.use("/api/ck-charts/dedupe", (req, res, next) => {
+  if (req.method === "POST") res.on("finish", () => db.invalidateRowsCache());
+  next();
 });
 
 // 12. CK Charts sync — read the CK tracking-chart workbooks from the local

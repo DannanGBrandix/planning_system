@@ -209,14 +209,37 @@ export function derivePlanStatus(row: Record<string, unknown>): string {
   return "";
 }
 
-// Fetch all rows from backend, filtered by role for team isolation
-export async function getAllRows(role?: string): Promise<EmbellishmentRow[]> {
+// How the most recent getAllRows() call was served, so the UI can show it (see Header.tsx).
+//   cache: "HIT" (server memory) | "MISS" (server re-read the database) | "WAIT" (shared a re-read
+//   already running) | "STALE" (database unreachable — server sent its last saved copy) |
+//   "ERROR" (the request failed; the caller keeps showing what it already had)
+export interface RowsSyncInfo {
+  ok: boolean;
+  cache: string;
+  at: number; // when this fetch finished (ms since epoch)
+  lastGoodAt: number | null; // last time a fetch succeeded (for "showing data from …")
+  error?: string;
+}
+
+let lastRowsSync: RowsSyncInfo | null = null;
+export function getLastRowsSync(): RowsSyncInfo | null {
+  return lastRowsSync;
+}
+
+// Fetch all rows from backend, filtered by role for team isolation.
+// `fresh: true` (the "Refresh now" button) tells the server to bypass its cache and re-read the
+// database; the server throttles this to once per 5 s.
+export async function getAllRows(role?: string, opts?: { fresh?: boolean }): Promise<EmbellishmentRow[]> {
   try {
     // Build query string: teams get filtered results, privileged roles get all rows
-    const teamParam = role ? `?team=${encodeURIComponent(role)}` : "";
-    const response = await apiFetch(`/rows${teamParam}`);
-    if (!response.ok) throw new Error("Failed to fetch rows");
-    
+    const params: string[] = [];
+    if (role) params.push(`team=${encodeURIComponent(role)}`);
+    if (opts?.fresh) params.push("fresh=1");
+    const response = await apiFetch(`/rows${params.length ? `?${params.join("&")}` : ""}`);
+    if (!response.ok) throw new Error(`Failed to fetch rows (HTTP ${response.status})`);
+
+    const now = Date.now();
+    lastRowsSync = { ok: true, cache: response.headers.get("X-Rows-Cache") || "?", at: now, lastGoodAt: now };
     const rows: EmbellishmentRow[] = await response.json();
     return rows.map(r => {
       if (typeof r.col4 === 'string') {
@@ -230,6 +253,13 @@ export async function getAllRows(role?: string): Promise<EmbellishmentRow[]> {
     });
   } catch (err) {
     console.warn("getAllRows failed:", err);
+    lastRowsSync = {
+      ok: false,
+      cache: "ERROR",
+      at: Date.now(),
+      lastGoodAt: lastRowsSync?.lastGoodAt ?? null,
+      error: err instanceof Error ? err.message : String(err),
+    };
     return [];
   }
 }
