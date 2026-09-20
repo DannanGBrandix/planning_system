@@ -245,7 +245,7 @@ const MAX_BACKUPS = 20;
 // If a TTL refresh fails (Supabase down / 402 after the quota), the stale copy is served instead
 // of erroring, and the refresh is retried after ROWS_CACHE_RETRY_MS.
 // ---------------------------------------------------------------------------
-const ROWS_CACHE_TTL_MS = Number(process.env.ROWS_CACHE_TTL_MS) || 5 * 60 * 1000;
+const ROWS_CACHE_TTL_MS = Number(process.env.ROWS_CACHE_TTL_MS) || 60 * 60 * 1000;
 const ROWS_CACHE_RETRY_MS = 30 * 1000;
 let rowsCache = null; // { rows, at }
 let rowsCacheGen = 0; // bumped on every invalidation so an in-flight read can't repopulate stale data

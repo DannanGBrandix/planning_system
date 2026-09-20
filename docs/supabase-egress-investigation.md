@@ -206,7 +206,7 @@ The fix is code-only (uncommitted in the working tree); **no data was changed an
 
 | # | Change | File |
 |---|---|---|
-| 1 | **Rows cache.** `getAllRows` serves the whole table from memory. Supabase is re-read only after a row write (every writer is wrapped once at the bottom of `db.js`, in a `finally`) or after `ROWS_CACHE_TTL_MS` (default 5 min — safety net for edits made outside this process). One cached copy serves all roles (team filters are applied in memory, same rules as before). Concurrent readers share one refill; a write that lands during a refill cannot leave stale data cached. | `server/db.js` |
+| 1 | **Rows cache.** `getAllRows` serves the whole table from memory. Supabase is re-read only after a row write (every writer is wrapped once at the bottom of `db.js`, in a `finally`) or after `ROWS_CACHE_TTL_MS` (default 60 min, raised from 5 min on 2026-09-21 — safety net for edits made outside this process). One cached copy serves all roles (team filters are applied in memory, same rules as before). Concurrent readers share one refill; a write that lands during a refill cannot leave stale data cached. | `server/db.js` |
 | 2 | **Stale-if-error.** If a TTL refresh fails (e.g. Supabase 402 after the quota), the last good copy is served and retried after 30 s. After a *write* the error surfaces instead (never serves pre-write data). | `server/db.js` |
 | 3 | The junk `bulk` row is excluded in the query (no longer downloaded on each refill). | `server/db.js` |
 | 4 | `POST /api/ck-charts/dedupe` writes rows through its own client → it clears the cache itself. | `server/index.js` |
@@ -224,14 +224,14 @@ The fix is code-only (uncommitted in the working tree); **no data was changed an
 - **`X-Rows-Cache` response header** on `GET /api/rows` (browser DevTools → Network): `HIT` (from memory), `MISS` (this request re-read Supabase), `WAIT` (shared a refill already running), `STALE` (Supabase failed, old copy served).
 - **Server console**: a `[DB] rows cache MISS -> refilled …` line on every refill, and a summary line every 10 minutes (`N hits, N misses, …`).
 - **In the web app (header chip, left of the mail button):** `● Synced 11:06:57 AM · cache HIT` (green) / `cache MISS` (green; the server re-read the database). **Amber** `Old copy · database unreachable` = Supabase failed and the server sent its last saved copy. **Red** `Refresh failed … · showing data from HH:MM` = the last refresh failed and the table on screen is from the last good load. The **↻ button ("Refresh now")** skips the cache and reads straight from the database (`GET /api/rows?fresh=1`, throttled server-side to one forced re-read per 5 s). Implemented in `Header.tsx` (`RowsSyncChip`), `getLastRowsSync()` in `lib/db.ts`, and `page.tsx`.
-- **Why nothing is missed:** every save made through the app clears the server cache immediately, so the next poll (≤15 s) shows it. The only changes that can lag are ones made *outside* the app (Supabase SQL editor, CLI scripts) — up to 5 min (`ROWS_CACHE_TTL_MS`) — and "Refresh now" removes even that wait.
-- A healthy day looks like a hit rate above ~95%; misses should track "someone saved something" + about one per 5 minutes.
+- **Why nothing is missed:** every save made through the app clears the server cache immediately, so the next poll (≤15 s) shows it. The only changes that can lag are ones made *outside* the app (Supabase SQL editor, CLI scripts) — up to 60 min (`ROWS_CACHE_TTL_MS`) — and "Refresh now" removes even that wait.
+- A healthy day looks like a hit rate above ~95%; misses should track "someone saved something" + about one per hour (TTL 60 min).
 
 **To activate:** restart the Express server (`npm run dev:all` or `node server/index.js`) — the cache lives in that process. The page change hot-reloads.
 
 **Known limits / follow-ups**
 - Each write empties the cache, so the next read refills (~0.64 MB). Heavy editing = more refills; patching single rows into the cache would reduce that further if it ever matters.
-- Edits made straight in the Supabase SQL editor or by the CLI scripts appear after the TTL (≤ 5 min) or a server restart. Lower `ROWS_CACHE_TTL_MS` in `server/.env` if that's too slow.
+- Edits made straight in the Supabase SQL editor or by the CLI scripts appear after the TTL (≤ 60 min) or a server restart, or immediately via "Refresh now". Lower `ROWS_CACHE_TTL_MS` in `server/.env` if that's too slow.
 - `sync.js`'s periodic `select *` and the `bulk` row's deletion (`delete from rows where id = 'bulk';` on PROD and TEST) are left as they were.
 - This does not reduce the 14 GB already recorded this billing cycle (04 Sep – 04 Oct).
 
