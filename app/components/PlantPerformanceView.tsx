@@ -3,6 +3,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { EmbellishmentRow, getRowStatus, getPlantAliasConfig } from "../lib/db";
 import { parseEventValue, getReasonByCode } from "../lib/eventCodes";
 import { applyPlantAliasConfig, getPlantAliasRuntimeConfig, resolvePlantDateTargets } from "../lib/plantUtils";
+import ExcelJS from "exceljs";
+import { saveAs } from "file-saver";
+import PlantPlanRangeExport from "./PlantPlanRangeExport";
 import {
   Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, Line, ComposedChart,
@@ -75,6 +78,7 @@ export default function PlantPerformanceView({ rows }: PlantPerformanceViewProps
   const [failPts, setFailPts] = useState(1);
   const [overdueAsFailed, setOverdueAsFailed] = useState(false);
   const [selectedPlant, setSelectedPlant] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   // Plant merge/hide config (Score Card page) is a module-level layer in plantUtils — load it here
   // too so this page groups plants exactly like the rest of the app, even if opened first.
@@ -247,6 +251,104 @@ export default function PlantPerformanceView({ rows }: PlantPerformanceViewProps
   const fmtPts = (n: number) => (n > 0 ? `+${n}` : String(n));
   const scopeLabel = `${year || "—"}${month !== "all" ? ` · ${MONTHS[Number(month) - 1]}` : ""}`;
 
+
+  // Excel of what's on screen: Summary (plant totals for the filters, incl. month columns), Monthly
+  // (plant × month for the whole year — pivot-friendly) and Graphics (every graphic behind the totals).
+  const exportExcel = async () => {
+    if (plantRows.length === 0) return;
+    setExporting(true);
+    try {
+      const wb = new ExcelJS.Workbook();
+      const bold = (row: ExcelJS.Row) => row.eachCell((c) => {
+        c.font = { bold: true };
+        c.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+      });
+      const label = (o: Outcome) => (o === "onTime" ? "On time" : o === "failed" ? "Failed" : o === "overdue" ? "Overdue - not updated" : "Upcoming");
+      const filters = `Year ${year}${month !== "all" ? ` · ${MONTHS[Number(month) - 1]}` : ""} · Season: ${season} · Category: ${category} · Pass +${passPts} / Fail -${failPts}${overdueAsFailed ? " · overdue counted as failed" : ""}`;
+
+      const sum = wb.addWorksheet("Summary");
+      sum.columns = [
+        { header: "PLANT", key: "plant", width: 24 },
+        { header: "GRAPHICS", key: "g", width: 11 },
+        { header: "ON TIME (PPS GREEN)", key: "on", width: 20 },
+        { header: "FAILED (PPS RED)", key: "fail", width: 18 },
+        { header: "PENDING", key: "pend", width: 11 },
+        { header: "ON-TIME % (RESOLVED)", key: "pct", width: 21 },
+        { header: "NET POINTS", key: "pts", width: 12 },
+        ...MONTHS.map((m) => ({ header: `${m} PTS`, key: `m_${m}`, width: 9 })),
+      ];
+      bold(sum.getRow(1));
+      plantRows.forEach((p) => {
+        const r: Record<string, string | number> = {
+          plant: p.plant, g: allocated(p.total), on: p.total.onTime, fail: p.total.failed, pend: pending(p.total),
+          pct: rate(p.total) === null ? "" : `${rate(p.total)}%`, pts: points(p.total),
+        };
+        p.perMonth.forEach((b, i) => { r[`m_${MONTHS[i]}`] = b ? points(b) : ""; });
+        sum.addRow(r);
+      });
+      sum.addRow({ plant: "TOTAL", g: allocated(grand), on: grand.onTime, fail: grand.failed, pend: pending(grand), pct: rate(grand) === null ? "" : `${rate(grand)}%`, pts: points(grand) }).font = { bold: true };
+      sum.addRow([]);
+      sum.addRow([filters]);
+      sum.views = [{ state: "frozen", ySplit: 1, xSplit: 1 }];
+
+      const mon = wb.addWorksheet("Monthly");
+      mon.columns = [
+        { header: "PLANT", key: "plant", width: 24 },
+        { header: "MONTH", key: "month", width: 12 },
+        { header: "GRAPHICS", key: "g", width: 11 },
+        { header: "ON TIME", key: "on", width: 10 },
+        { header: "FAILED", key: "fail", width: 10 },
+        { header: "PENDING", key: "pend", width: 10 },
+        { header: "ON-TIME % (RESOLVED)", key: "pct", width: 21 },
+        { header: "NET POINTS", key: "pts", width: 12 },
+      ];
+      bold(mon.getRow(1));
+      plantRows.forEach((p) => p.perMonth.forEach((b, i) => {
+        if (!b) return;
+        mon.addRow({ plant: p.plant, month: `${MONTHS[i]} ${year}`, g: allocated(b), on: b.onTime, fail: b.failed, pend: pending(b), pct: rate(b) === null ? "" : `${rate(b)}%`, pts: points(b) });
+      }));
+      mon.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 8 } };
+      mon.views = [{ state: "frozen", ySplit: 1 }];
+
+      const gs = wb.addWorksheet("Graphics");
+      gs.columns = [
+        { header: "PLANT", key: "plant", width: 24 },
+        { header: "MONTH", key: "month", width: 12 },
+        { header: "GRAPHIC", key: "graphic", width: 20 },
+        { header: "SEASON", key: "season", width: 10 },
+        { header: "CATEGORY", key: "category", width: 18 },
+        { header: "PPS DAY(S)", key: "days", width: 22 },
+        { header: "RESULT", key: "result", width: 22 },
+        { header: "POINTS", key: "pts", width: 10 },
+        { header: "FAIL REASON", key: "reason", width: 34 },
+      ];
+      bold(gs.getRow(1));
+      plantRows.forEach((p) => [...p.total.graphics]
+        .sort((a, b) => (a.dates[0] || "").localeCompare(b.dates[0] || "") || a.graphic.localeCompare(b.graphic))
+        .forEach((g) => {
+          const pts = g.outcome === "onTime" ? passPts : g.outcome === "failed" ? -failPts : 0;
+          const added = gs.addRow({
+            plant: p.plant, month: g.dates[0] ? `${MONTHS[Number(g.dates[0].slice(5, 7)) - 1]} ${g.dates[0].slice(0, 4)}` : "",
+            graphic: g.graphic, season: g.season, category: g.category, days: g.dates.map(fmtDay).join(", "),
+            result: label(g.outcome), pts, reason: g.reason,
+          });
+          const c = added.getCell("result");
+          if (g.outcome === "onTime") { c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFC6EFCE" } }; c.font = { bold: true, color: { argb: "FF006100" } }; }
+          if (g.outcome === "failed") { c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFC7CE" } }; c.font = { bold: true, color: { argb: "FF9C0006" } }; }
+        }));
+      gs.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+      gs.views = [{ state: "frozen", ySplit: 1 }];
+
+      const buf = await wb.xlsx.writeBuffer();
+      saveAs(
+        new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+        `Plant_Performance_${year}${month !== "all" ? `-${month}` : ""}.xlsx`,
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const selectCls = "bg-zinc-900 border border-zinc-700 text-zinc-200 text-sm rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-amber-500/40";
 
   return (
@@ -297,6 +399,19 @@ export default function PlantPerformanceView({ rows }: PlantPerformanceViewProps
             </label>
           </div>
         </div>
+      </div>
+
+      {/* exports */}
+      <div className="px-6 py-3 border-b border-zinc-800/60 flex items-center justify-between gap-4 flex-wrap">
+        <button
+          onClick={exportExcel}
+          disabled={exporting || plantRows.length === 0}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-xl transition-all shadow-md active:scale-[0.98]"
+          title="Download what you see here as Excel — Summary, Monthly and Graphics sheets, using the current year / month / season / category filters"
+        >
+          {exporting ? "Exporting…" : "Export performance (Excel)"}
+        </button>
+        <PlantPlanRangeExport rows={rows} />
       </div>
 
       <div className="px-6 py-6 space-y-6">
