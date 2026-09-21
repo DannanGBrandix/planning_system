@@ -3646,7 +3646,19 @@ export default function Home() {
             const fabricNumsOf = (v: string): Set<string> =>
               new Set((String(v || "").match(/\d{3,7}/g) || []));
             const incomingFabricNums = fabricNumsOf(incomingFabricRef);
+            // VS and PINK (VS AE, VS-SLEEP, PINK, PINK-SLEEP, ...) ignore Fabric Reference when
+            // matching, per the planner: the same Graphic + Combo + Style + Category + Season is
+            // the same item whatever FB number a given chart wrote. Confirmed against real data:
+            // the VS AE SU27 Graphic Chart wrote "FB25251" for GVU27-247 / -249 / -251 where the
+            // rows already in the database held "FB25152", so the number check turned every one
+            // of them into a brand-new duplicate on re-import (and left the DHL number on the twin,
+            // so the original still counted as "Submission Pending"). Judged on either side's
+            // category so a blank-category file row still matches a VS/PINK database row. The
+            // fabric ref itself is still unioned on apply below, so neither number is lost.
+            const isVsOrPinkCategory = (v: unknown): boolean =>
+              /^(VS|PINK)/.test(String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, ""));
             const fabricCompatible = (r: EmbellishmentRow) => {
+              if (isVsOrPinkCategory(incomingCategory) || isVsOrPinkCategory(r.col3)) return true;
               if (!incomingFabricNums.size) return true;
               const dbNums = fabricNumsOf(normalize(r.col13 || ""));
               if (!dbNums.size) return true;
