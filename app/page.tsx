@@ -73,7 +73,7 @@ import { plantFromFlow, legPlantFlow } from "./lib/plantUtils";
 import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
 import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
-import { isHiddenEventTrigger } from "./lib/triggerUtils";
+import { isHiddenEventTrigger, seasonBase } from "./lib/triggerUtils";
 import {
   ckCategoryFromFilename,
   ckCategoryCanonical,
@@ -906,12 +906,24 @@ export default function Home() {
           const aoqChanged = normalizeStr(originalRow.col20) !== normalizeStr(updatedRow.col20);
 
           if (aoqChanged) {
+            // Fans an AOQ edit out to every OTHER row sharing this same Trigger — "KNIT" recurs
+            // every season with its own real deadline (SU27's KNIT AOQ isn't SP27's), so the key
+            // must include Category + Season, not just the Trigger text. Without this, editing
+            // AOQ on one season's "KNIT" row silently overwrote every other season's "KNIT" rows
+            // too (confirmed: a SU27 row was showing SP27's AOQ date because of exactly this).
             const getDropKey = (r: EmbellishmentRow): string => {
               const col2Val = String(r.col2 || "").trim();
-              if (col2Val && col2Val.toUpperCase() !== "N/A") return col2Val.toUpperCase();
-              const col4Val = String(r.col4 || "").trim();
-              const match = col4Val.match(/(\d{1,2}\.\d{1,2}(?:\/\d{1,2}\.\d{1,2})?\s*(?:DROP)?)/i);
-              return match ? match[1].trim().toUpperCase() : col4Val.toUpperCase();
+              let triggerPart: string;
+              if (col2Val && col2Val.toUpperCase() !== "N/A") {
+                triggerPart = col2Val.toUpperCase();
+              } else {
+                const col4Val = String(r.col4 || "").trim();
+                const match = col4Val.match(/(\d{1,2}\.\d{1,2}(?:\/\d{1,2}\.\d{1,2})?\s*(?:DROP)?)/i);
+                triggerPart = match ? match[1].trim().toUpperCase() : col4Val.toUpperCase();
+              }
+              const category = String(r.col3 || "").trim().toUpperCase();
+              const season = seasonBase(r.col4);
+              return `${triggerPart}|||${category}|||${season}`;
             };
 
             const targetDrop = getDropKey(originalRow);

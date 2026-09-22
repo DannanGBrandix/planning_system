@@ -9,7 +9,7 @@ import {
   TriggerCatalogEntry,
   saveMultipleRows,
 } from "../lib/db";
-import { formatDateDDMMYYYY, seasonAoqKey } from "../lib/triggerUtils";
+import { formatDateDDMMYYYY, seasonAoqKey, seasonBase } from "../lib/triggerUtils";
 
 interface TriggerManagementViewProps {
   rows: EmbellishmentRow[]; // current-version rows only (same convention as AdvancedDashboard)
@@ -250,6 +250,23 @@ export default function TriggerManagementView({
 
   const handleAddTrigger = async () => {
     if (!canManage || !newTriggerName.trim()) return;
+    // A Trigger name recurs every season with its OWN AOQ date ("KNIT" in SU27 isn't "KNIT" in
+    // SP27) — everything that matches a row to a catalog date (getRowAoqIso / findTriggerCatalogAoq
+    // in app/lib/nycVerdict.ts) keys on name + Category + Season, so two entries sharing that same
+    // key would be genuinely ambiguous (which date wins is undefined). Block it here instead.
+    const dupe = triggerCatalog.find(
+      (t) =>
+        t.name.trim().toLowerCase() === newTriggerName.trim().toLowerCase() &&
+        t.category.trim().toUpperCase() === newTriggerCategory.trim().toUpperCase() &&
+        seasonBase(t.season) === seasonBase(newTriggerSeason),
+    );
+    if (dupe) {
+      window.alert(
+        `"${newTriggerName.trim()}" already exists for ${newTriggerCategory.trim() || "(no category)"} ${newTriggerSeason.trim() || "(no season)"} ` +
+          `(AOQ ${dupe.aoqIso ? formatDateDDMMYYYY(dupe.aoqIso) : "Not Set"}). Edit that entry instead of adding a duplicate — two entries with the same Trigger+Category+Season would be ambiguous.`,
+      );
+      return;
+    }
     const entry: TriggerCatalogEntry = {
       id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       name: newTriggerName.trim(),

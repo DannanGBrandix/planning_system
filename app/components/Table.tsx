@@ -31,6 +31,7 @@ import RowDetailsModal from "./RowDetailsModal";
 import EventStatusPanel from "./EventStatusPanel";
 import HistoryModal from "./HistoryModal";
 import { parseEventValue } from "../lib/eventCodes";
+import { findTriggerCatalogAoq } from "../lib/nycVerdict";
 import { calculateTargetSendDate, parseCrossDevGroups, legPlantFlow } from "../lib/plantUtils";
 import { isSriLankaHoliday, getSriLankaHolidayName } from "../lib/sriLankaHolidays";
 import DailyEventsExport from "./DailyEventsExport";
@@ -624,13 +625,15 @@ export default function Table({
       let updatedRow: EmbellishmentRow = { ...row, [colKey]: editValue };
       // Picking (or typing an exact match for) a known Trigger auto-fills its AOQ date onto
       // col20 — but only when col20 is still blank, so this never overwrites an AOQ date/verdict
-      // someone already set by hand.
+      // someone already set by hand. Matched by name + Category + Season (findTriggerCatalogAoq,
+      // shared with the AOQ scoring engine) — the SAME Trigger name recurs every season with a
+      // different deadline ("KNIT" in SU27 isn't "KNIT" in SP27), so name alone was wrong here:
+      // it silently grabbed whichever same-named catalog entry happened to come first, regardless
+      // of this row's own season.
       if (colKey === "col2" && !String(row.col20 || "").trim()) {
-        const match = triggerCatalog.find(
-          (t) => t.name.trim().toLowerCase() === editValue.trim().toLowerCase(),
-        );
-        if (match?.aoqIso) {
-          updatedRow.col20 = match.aoqIso;
+        const aoqIso = findTriggerCatalogAoq(updatedRow as unknown as Record<string, unknown>, triggerCatalog);
+        if (aoqIso) {
+          updatedRow.col20 = aoqIso;
         }
       }
       if (colKey.match(/^\d{4}-\d{2}-\d{2}$/)) {

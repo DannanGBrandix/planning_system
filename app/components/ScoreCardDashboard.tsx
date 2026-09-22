@@ -3,12 +3,12 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   EmbellishmentRow, getRowStatus, isRowSent, getSeasonAoqConfig, SeasonAoqMap,
   getPlantAliasConfig, savePlantAliasConfig, PlantAliasConfig,
+  getTriggerCatalog, TriggerCatalogEntry,
 } from "../lib/db";
-import { parseEventValue } from "../lib/eventCodes";
 import { extractPlants, applyPlantAliasConfig } from "../lib/plantUtils";
-import { extractValidDate, formatDateDDMMYYYY, seasonAoqKey } from "../lib/triggerUtils";
+import { formatDateDDMMYYYY, seasonBase } from "../lib/triggerUtils";
 import {
-  parseTriggerMD, nearestYearIso, rowRefIso, readNycVerdict, deriveNycVerdict, markNycVerdict,
+  deriveNycVerdict, markNycVerdict, resolveGraphicAoqVerdict,
 } from "../lib/nycVerdict";
 import {
   Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -28,65 +28,6 @@ const C_REJECT = "#ef4444";
 const C_PENDING = "#64748b";
 const C_SCORE = "#38bdf8";
 
-// ── small date helpers ─────────────────────────────────────────────────────
-const isoRe = /^\d{4}-\d{2}-\d{2}$/;
-
-function addDays(iso: string, n: number): string {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + n);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-// whole days from `a` to `b` (b - a). Positive => b is later.
-function dayDiff(a: string, b: string): number {
-  return Math.round((Date.parse(b + "T00:00:00") - Date.parse(a + "T00:00:00")) / 86400000);
-}
-
-// Base season token ("SP27" from "SP27 ICON SHOP" / "FA27\n…").
-function seasonBase(v: unknown): string {
-  return String(v ?? "").replace(/["'\r\n]+/g, " ").trim().toUpperCase().split(/\s+/)[0];
-}
-
-// Base event code, hyphen-marker & pipe stripped ("PPS" from "PPS-S" / "PPS|P").
-function baseCode(v: unknown): string {
-  return String(v ?? "").split("|")[0].trim().toUpperCase().split("-")[0];
-}
-// Full event code, keeping the -A / -R verdict suffix but dropping "-S" / "|P" etc.
-function fullCode(raw: string): string {
-  const p = parseEventValue(raw);
-  return (p?.code || "").toUpperCase();
-}
-
-// Every "<date>" / "<date>_<leg>" cell on a row (flattened keys + schedule JSON).
-function dateEntriesOf(row: EmbellishmentRow): [string, string][] {
-  const out: [string, string][] = [];
-  const push = (k: string, v: unknown) => {
-    if (typeof v === "string" && v.trim() && /^\d{4}-\d{2}-\d{2}/.test(k)) out.push([k.slice(0, 10), v.trim()]);
-  };
-  Object.entries(row).forEach(([k, v]) => push(k, v));
-  if (row.schedule && typeof row.schedule === "object") {
-    Object.entries(row.schedule as Record<string, unknown>).forEach(([k, v]) => push(k, v));
-  }
-  return out;
-}
-
-// AOQ deadline for a row: a real date in col20, else the trigger's own month/day code
-// (parseTriggerMD + year resolved from the row's own events, nearestYearIso — both in
-// app/lib/nycVerdict.ts), else the row's Category+Season AOQ date set on the Trigger Manager
-// page (a Trigger like "KNIT" / "COMPLETE" / "RECEIVE" names a process stage, not a deadline, so
-// it never parses as an M.D code — PINK/VS/CK each still need a season deadline to score
-// against). Multiple dates on one trigger -> the latest.
-function getRowAoqIso(row: EmbellishmentRow, seasonAoqMap: SeasonAoqMap): string | null {
-  const col20 = extractValidDate(row.col20);
-  if (col20) return col20;
-  const mds = parseTriggerMD(String(row.col2 || ""));
-  if (mds.length) {
-    const ref = rowRefIso(row as unknown as Record<string, unknown>);
-    const isos = mds.map(([m, d]) => nearestYearIso(m, d, ref)).filter(Boolean).sort();
-    if (isos.length) return isos[isos.length - 1];
-  }
-  const seasonDate = seasonAoqMap[seasonAoqKey(row.col3, seasonBase(row.col4))];
-  return seasonDate ? extractValidDate(seasonDate) : null;
-}
 
 type Verdict = "onTime" | "late" | "rejected" | "pending" | "unscored";
 const VERDICT_LABEL: Record<Verdict, string> = {
@@ -144,11 +85,17 @@ export default function ScoreCardDashboard({ rows, onUpdateRow, currentRole }: S
   const [busy, setBusy] = useState<{ label: string; done: number; total: number } | null>(null);
   const [verdictDate, setVerdictDate] = useState<Record<string, string>>({});
   // Category+Season AOQ fallback (set on the Trigger Manager page) — used only when a row's own
-  // Trigger carries no date (col20 blank and the trigger text isn't an M.D code).
+  // Trigger carries no date of its own (col20 blank, no matching catalog entry, and the trigger
+  // text isn't an M.D code).
   const [seasonAoqMap, setSeasonAoqMap] = useState<SeasonAoqMap>({});
+  // Named Trigger catalog ("KNIT", "LOUNGE", …), each entry scoped to its own Category+Season —
+  // the SAME Trigger name recurs every season with a different AOQ deadline. getRowAoqIso matches
+  // on name + Category + Season, never on name alone.
+  const [triggerCatalog, setTriggerCatalog] = useState<TriggerCatalogEntry[]>([]);
 
   useEffect(() => {
     getSeasonAoqConfig().then(setSeasonAoqMap).catch(() => {});
+    getTriggerCatalog().then(setTriggerCatalog).catch(() => {});
   }, []);
 
   // Plant aliases (merge two plant spellings) / exclusions (hide a bogus plant) — applied as a
@@ -299,14 +246,7 @@ export default function ScoreCardDashboard({ rows, onUpdateRow, currentRole }: S
       const plantSet = new Set<string>();
       const catCount = new Map<string, number>();
       const trigCount = new Map<string, number>();
-      let aoqIso: string | null = null;
       let anySent = false; // isRowSent() — same "gone out to NY" evidence as the main Dashboard's "HQ Dispatched to USA" tile
-      let approvalIso: string | null = null;
-      let rejectedIso: string | null = null;
-      let anyEstimated = false; // verdict came from a live comment parse, not a materialised nycv:/cell
-      let lastNycIso: string | null = null; // latest NYC / NY event — last-resort approval date
-      let anyApprovedStatus = false;
-      let anyResubmitStatus = false;
 
       gRows.forEach((r) => {
         extractPlants(r.col11 as string | null | undefined).forEach((p) => plantSet.add(p));
@@ -315,72 +255,25 @@ export default function ScoreCardDashboard({ rows, onUpdateRow, currentRole }: S
         if (c) catCount.set(c, (catCount.get(c) || 0) + 1);
         const t = String(r.col2 || "").trim();
         if (t && t.toUpperCase() !== "N/A" && t !== "-") trigCount.set(t, (trigCount.get(t) || 0) + 1);
-        const st = getRowStatus(r);
-        if (st === "approved") anyApprovedStatus = true;
-        if (st === "resubmit") anyResubmitStatus = true;
         if (isRowSent(r)) anySent = true;
-
-        const rowAoq = getRowAoqIso(r, seasonAoqMap);
-        if (rowAoq && (!aoqIso || rowAoq > aoqIso)) aoqIso = rowAoq; // latest wins = lenient
-
-        dateEntriesOf(r).forEach(([iso, val]) => {
-          if (!isoRe.test(iso)) return;
-          const p = parseEventValue(val);
-          if (!p) return;
-          const bc = baseCode(val);
-          const fc = fullCode(val);
-          if ((bc === "NYC" || (bc === "NY" && fc === "NY")) && (!lastNycIso || iso > lastNycIso)) lastNycIso = iso;
-        });
-
-        // NY approval verdict: real NYC-A/NYC-R cell -> manual "nycv:" -> derived "nycv:" ->
-        // parse the strike-off comment on the fly. See app/lib/nycVerdict.ts.
-        const rv = readNycVerdict(r as unknown as Record<string, unknown>);
-        if (rv) {
-          if (rv.source === "comment") anyEstimated = true;
-          if (rv.kind === "A") {
-            if (!approvalIso || rv.iso < approvalIso) approvalIso = rv.iso;
-          } else if (!rejectedIso || rv.iso > rejectedIso) {
-            rejectedIso = rv.iso;
-          }
-        }
       });
 
       const trigger = [...trigCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
       const cat = [...catCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "—";
+
+      // AOQ deadline + NY-approval verdict, resolved once from ALL of this graphic's rows — see
+      // app/lib/nycVerdict.ts. Shared with Plant Performance's "approved before AOQ" scoring so
+      // the two pages can never disagree about the same graphic.
+      const av = resolveGraphicAoqVerdict(
+        gRows.map((r) => ({ row: r as unknown as Record<string, unknown>, status: getRowStatus(r) })),
+        seasonAoqMap,
+        { graceDays, useFallback, triggerCatalog },
+      );
+
       if (trigger) {
         const set = triggerAoq.get(trigger) || new Set<string>();
-        if (aoqIso) set.add(aoqIso);
+        if (av.aoqIso) set.add(av.aoqIso);
         triggerAoq.set(trigger, set);
-      }
-
-      // Verdict from readNycVerdict above; last-resort fallback for a row that is Approved /
-      // Resubmit by getRowStatus but whose comment carries no parseable "AD M/D" line-date.
-      let verdict: Verdict;
-      let daysVsAoq: number | null = null;
-      let estimated = anyEstimated;
-      let effApprovalIso: string | null = approvalIso;
-      let effRejected = Boolean(rejectedIso && (!approvalIso || rejectedIso > approvalIso));
-
-      if (!approvalIso && !rejectedIso && useFallback && (anyApprovedStatus || anyResubmitStatus)) {
-        estimated = true;
-        if (anyApprovedStatus) effApprovalIso = lastNycIso; // may be null -> "unscored"
-        else effRejected = true;
-      }
-
-      if (effApprovalIso && !effRejected) {
-        if (!aoqIso) {
-          verdict = "unscored";
-        } else {
-          daysVsAoq = dayDiff(effApprovalIso, addDays(aoqIso, graceDays)); // deadline - approval
-          verdict = daysVsAoq >= 0 ? "onTime" : "late";
-        }
-      } else if (effRejected) {
-        verdict = "rejected";
-      } else if (anyApprovedStatus && !effApprovalIso) {
-        // approved, but no date anywhere to place it — count it as approved, timing unknown
-        verdict = "unscored";
-      } else {
-        verdict = "pending";
       }
 
       graphics.push({
@@ -388,14 +281,14 @@ export default function ScoreCardDashboard({ rows, onUpdateRow, currentRole }: S
         season: seasonBase(gRows[0].col4),
         category: cat,
         trigger,
-        aoqIso,
+        aoqIso: av.aoqIso,
         plants: [...plantSet].sort(),
         dispatched: anySent,
-        approvalIso: effApprovalIso,
-        rejectedIso: effRejected ? (rejectedIso || null) : null,
-        verdict,
-        daysVsAoq,
-        estimated,
+        approvalIso: av.approvalIso,
+        rejectedIso: av.rejectedIso,
+        verdict: av.verdict,
+        daysVsAoq: av.daysVsAoq,
+        estimated: av.estimated,
         status: getRowStatus(gRows[0]),
         rowCount: gRows.length,
       });
@@ -465,7 +358,7 @@ export default function ScoreCardDashboard({ rows, onUpdateRow, currentRole }: S
     // aliasVersion isn't read directly — it just forces a recompute after a plant merge/hide,
     // since extractPlants() reads RUNTIME_PLANT_ALIASES from module state useMemo can't see.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, season, category, groupByCategory, graceDays, useFallback, seasonAoqMap, aliasVersion]);
+  }, [rows, season, category, groupByCategory, graceDays, useFallback, seasonAoqMap, triggerCatalog, aliasVersion]);
 
   // Materialise every row's NY verdict (nycv: keys) from its strike-off comments in one pass.
   const handleRecompute = async () => {
