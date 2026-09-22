@@ -2497,7 +2497,11 @@ export default function Table({
               scheduled = clearEventForward(legBare, legDate);
             } else {
               legBare[legDate] = newValue;
-              scheduled = (parsedNew && parsedNew.status === "planned")
+              // "planned" AND "pass" both anchor on the picked date and reschedule only what's
+              // downstream — see the shared-plan branch below for why "pass" must NOT fall through
+              // to the full rebuild (it silently un-pins a moved-then-passed milestone and
+              // duplicates it). "fail" still takes the full rebuild for its auto-retry scheduling.
+              scheduled = (parsedNew && (parsedNew.status === "planned" || parsedNew.status === "pass"))
                 ? autoScheduleForwardFromEvent(legBare, parsedNew.code, legDate)
                 : autoScheduleEmbellishmentRow(legBare);
             }
@@ -2540,9 +2544,19 @@ export default function Table({
           // and re-plan forward from it". autoScheduleForwardFromEvent pins the picked event on the
           // picked date, leaves every earlier milestone exactly as recorded (FS/FR that already
           // happened don't move), and cascades only the events AFTER it. For the first milestone in
-          // the flow it falls back to the whole-flow rebuild. Pass/Fail already stay pinned to
-          // their exact date, so they take the normal path.
-          const scheduledRow = (parsedNew && parsedNew.status === "planned" && plainDate)
+          // the flow it falls back to the whole-flow rebuild.
+          //
+          // A "pass" verdict takes the SAME anchored path, not the full rebuild — a Pass/Fail value
+          // is never marked "|X" locked (encodeEventValue only locks a "planned" value), so once a
+          // manually-moved milestone (e.g. PPS dropped on a later date, "|X") gets marked done, the
+          // lock disappears and the full rebuild has nothing anchoring it to that real date any
+          // more. It then recomputes the WHOLE flow by pure lead-time math from scratch, and every
+          // milestone that doesn't land back on its exact original formula date — which a
+          // deliberately moved one never will — gets a brand-new duplicate pill written next to the
+          // real one (confirmed: move PPS out, mark it done -> phantom FS/FR/PPS pills reappear
+          // ahead of the real PPS date). "fail" still takes the full rebuild: it needs
+          // calculateAutoSchedule's failedEventsMap to auto-schedule the next-working-day retry.
+          const scheduledRow = (parsedNew && (parsedNew.status === "planned" || parsedNew.status === "pass") && plainDate)
             ? autoScheduleForwardFromEvent(rawRow, parsedNew.code, plainDate)
             : autoScheduleEmbellishmentRow(rawRow);
           scheduledRow.change_reason = "Updated via Event Status Panel";
