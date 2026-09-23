@@ -24,6 +24,7 @@ import {
   getRowStatus,
   hasColorApproval,
   hasFinalStrikeReferenceOrDirective,
+  hasFinalReferenceSecondDhl,
   cleanSeason,
   cleanCategory,
   isRowSent,
@@ -442,7 +443,8 @@ export default function Home() {
       const c34 = String(r.col34 || '').toLowerCase();
       if (!c22.includes('c+p') && !c34.includes('c+p')) return null;
       const hasApproved = c22.includes('approved') || c34.includes('approved');
-      return hasApproved ? 'Approved' : 'C+P';
+      // Final strike-off actually sent (2nd DHL marked "Final Reference") -> approved.
+      return hasApproved || hasFinalReferenceSecondDhl(r) ? 'Approved' : 'C+P';
     };
 
     const cpRows = rows.filter(r => {

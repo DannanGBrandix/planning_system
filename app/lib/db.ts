@@ -1200,6 +1200,17 @@ export const hasFinalStrikeReferenceOrDirective = (r: EmbellishmentRow): boolean
   );
 };
 
+// The ONE "final reference" case that DOES mean approved (planner, 2026-09-23): the C+P
+// directive has actually been carried out — the 2nd STRIKE OFF AWB# (col24) holds a real DHL/AWB
+// number AND is marked "Final Reference" (e.g. "DHL 8/25 9148951700 (NY Office) Final Referance"),
+// and no 2nd Strike-Off Comment (col34) has come back with a new verdict. A bare "… & SEND FINAL
+// SOFF" directive, or a "final ref" note with no second DHL, still stays C+P as above.
+export const hasFinalReferenceSecondDhl = (r: EmbellishmentRow): boolean => {
+  const c24 = String(r.col24 || '');
+  if (String(r.col34 || '').trim()) return false;
+  return FINAL_REFERENCE_RE.test(c24) && /\d{8,}/.test(c24.replace(/[\s-]/g, ''));
+};
+
 // Helper function to resolve item approval status
 // Evaluated based on col20 (Strike off Aesthetic Approval / Dropped) and col1/cell colors
 export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hold' | 'pending' | 'resubmit' | 'c+p' => {
@@ -1236,9 +1247,11 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
     c20.includes('DROPPED') || c20.includes('DROP') || c20.includes('REALLOCATED') || /\bMOVED\b/.test(c20) ||
     c1 === 'D' || c1.includes('DROPPED') || c1.includes('DROP') || c1.includes('REALLOCATED');
 
-  const isExplicitApproved =
-    c20.includes('APPROVED') || c20.includes('CONFIRMED') ||
+  // Status (col1) is what the planner sets by hand; col20 can be stale auto-written text.
+  const isStatusApproved =
     c1 === 'A' || c1 === 'C' || c1 === 'LA' || c1.includes('APPROVED') || c1.includes('CONFIRMED') || c1.includes('COMPLETED');
+  const isExplicitApproved =
+    c20.includes('APPROVED') || c20.includes('CONFIRMED') || isStatusApproved;
 
   // Approval is checked against BOTH strike-off comment columns independently, not just
   // "whichever is non-empty" (unlike the resubmit/dropped checks above, which deliberately use
@@ -1264,6 +1277,13 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
   // even if a stale col20 says "Approved" (an earlier auto-approve pass wrote that; the
   // page.tsx effect now self-heals it back to "C+P"). A real approval verdict in the comment
   // ("APPROVED FOR LAYOUT/TECH/EX") still wins via isCommentApproved below.
+  // A Status the planner set to Approved by hand always wins over the C+P hold below.
+  if (isStatusApproved) {
+    return 'approved';
+  }
+  if (isCommentCP && !isCommentApproved && hasFinalReferenceSecondDhl(r)) {
+    return 'approved';
+  }
   if (isCommentCP && !isCommentApproved && hasFinalStrikeReferenceOrDirective(r)) {
     return 'c+p';
   }

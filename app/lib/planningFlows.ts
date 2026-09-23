@@ -14,6 +14,20 @@ function isBablPlant(plantRaw: unknown): boolean {
   return extractPlants(String(plantRaw ?? "")).includes("BABL");
 }
 
+// BABL and AV, like the CK family (see getPlanningCategory), only ever run the FABRICS-style
+// flow (FS-first) — never SEWIN/GMT (Garments) or SEWIN/MOC (Mock-Ups) — regardless of what the
+// row's own Application Form / S-Off Requirement says. Checked via extractPlants (handles
+// multi-plant chains and every plant-name alias — "AV1"/"AV2"/"BFFAV"/"BRANDIXEMB" all canonicalize
+// to "AV") against BOTH the Plant (col11) and Plant Flow (col12) columns, same as every other
+// plant-structure check in this file. col12 is skipped when it's actually PROCESS free text, not a
+// plant chain (plantFlowIsProcessText) — same guard detectMatchingFlowRaw uses.
+const FABRIC_ONLY_PLANTS = new Set(["BABL", "AV"]);
+function isFabricOnlyPlant(row: Record<string, unknown>): boolean {
+  const plant = extractPlants(String(row.col11 ?? ""));
+  const plantFlow = plantFlowIsProcessText(row.col12) ? [] : extractPlants(String(row.col12 ?? ""));
+  return plant.some((p) => FABRIC_ONLY_PLANTS.has(p)) || plantFlow.some((p) => FABRIC_ONLY_PLANTS.has(p));
+}
+
 // A day the auto-scheduler must skip over — not just Saturday/Sunday, but also any gazetted Sri
 // Lankan public holiday (see sriLankaHolidays.ts) — plants aren't working either day, so no
 // planning event should ever land on one.
@@ -661,18 +675,19 @@ export function getApplicationFormCategory(row: Record<string, unknown>): Applic
 }
 
 /**
- * The category a row is actually PLANNED as — getApplicationFormCategory plus the CK-as-fabric
- * rule (a CK-family item whose Application Form / S-Off Requirement says Garments or Mock-Ups is
- * planned the FABRICS way, starting FS). Callers that must line up with the row's real event
- * sequence — flow detection, the Fabric Dispatch export's sheet routing — use THIS, not the raw
- * Application-Form category, otherwise a CK garment row is planned FS-first but exported onto a
- * per-plant GARMENT tab.
+ * The category a row is actually PLANNED as — getApplicationFormCategory plus the fabric-only
+ * overrides: a CK-family item (by Category, col3), OR a row running at BABL / AV (by Plant,
+ * col11/col12 — see isFabricOnlyPlant), whose Application Form / S-Off Requirement says Garments
+ * or Mock-Ups is planned the FABRICS way instead, starting FS. Callers that must line up with the
+ * row's real event sequence — flow detection, the Fabric Dispatch export's sheet routing — use
+ * THIS, not the raw Application-Form category, otherwise e.g. a CK garment row is planned
+ * FS-first but exported onto a per-plant GARMENT tab.
  */
 export function getPlanningCategory(row: Record<string, unknown>): ApplicationFormCategory {
   const category = getApplicationFormCategory(row);
   if (
-    isCkFamilyCategory(String(row.col3 || "")) &&
-    (category === "GARMENTS" || category === "MOCK-UPS")
+    (category === "GARMENTS" || category === "MOCK-UPS") &&
+    (isCkFamilyCategory(String(row.col3 || "")) || isFabricOnlyPlant(row))
   ) {
     return "FABRICS";
   }
@@ -684,8 +699,9 @@ export function getPlanningCategory(row: Record<string, unknown>): ApplicationFo
  * Application-Form category (FABRICS has 4, MOCK-UPS 3, GARMENTS 3, CUT PANELS 2, FIT FUNCTIONALS
  * 1). detectMatchingFlow auto-picks ONE of these from plant/process structure; this returns the
  * full menu so the planner can override it (Event Status panel "Apply a planning flow" section).
- * The CK-as-fabric rule (see detectMatchingFlow) is mirrored here so a CK garment/mock-up row
- * offers the fabric flows, matching what auto-detection would do.
+ * The fabric-only rule (see getPlanningCategory) is inherited here too — via getPlanningCategory,
+ * not a separate copy — so a CK, BABL, or AV garment/mock-up row offers the fabric flows,
+ * matching what auto-detection would do.
  */
 export function getApplicableFlows(row: Record<string, unknown>): PlanningFlow[] {
   const category: PlanningFlow["category"] = getPlanningCategory(row);
@@ -867,11 +883,11 @@ function detectMatchingFlowRaw(row: Record<string, unknown>): PlanningFlow {
   const plant = String(String(String(String(String(row.col11 || ""))))).toUpperCase();
 
   // 1. Determine Application Form Category
-  // CK-only rule (inside getPlanningCategory): a CK-category item whose S-Off Requirement is
-  // Garments or Mock-Ups is planned the FABRICS way — starting FS (not the SEWIN-first
-  // garments/mock-ups flow) — and still picks up the dye-plant (PPSDS -> RDPS) and two-plant
-  // (PPSES) fabric variants from the plant-structure checks below. Only CK behaves this way;
-  // every other Garments/Mock-Ups item keeps its own flow.
+  // Fabric-only rule (inside getPlanningCategory): a CK-category item, or a row running at BABL /
+  // AV, whose S-Off Requirement is Garments or Mock-Ups is planned the FABRICS way — starting FS
+  // (not the SEWIN-first garments/mock-ups flow) — and still picks up the dye-plant (PPSDS ->
+  // RDPS) and two-plant (PPSES) fabric variants from the plant-structure checks below. Only
+  // CK/BABL/AV behave this way; every other Garments/Mock-Ups item keeps its own flow.
   const category = getPlanningCategory(row);
 
   if (category === "FIT FUNCTIONALS") {
