@@ -3179,6 +3179,11 @@ export default function Home() {
             const dhlTrackingStr = String(formattedRow["col24"] || "");
 
             // 1. Process DHL tracking -> NY
+            // The DHL-date NY is only a FALLBACK for rows with no NY of their own: when the matched
+            // DB row already has a planned NY, the merge below turns THAT one green instead and
+            // drops this key (see dhlNyKey there).
+            let dhlNyKey = "";
+            let fabricFrKey = ""; // FR derived from the fabric-in date below (same fallback idea)
             if (dhlTrackingStr) {
               // Look for patterns like "DHL 7/16" or "AWB: 07/16"
               const dhlMatch = dhlTrackingStr.match(/(?:DHL|AWB|DTC|LTD)[-\s:]*(\d{1,2})\/(\d{1,2})/i);
@@ -3190,6 +3195,7 @@ export default function Home() {
                 
                 // Set to NY because it was sent
                 formattedRow[dhlDateKey] = "NY";
+                dhlNyKey = dhlDateKey;
               }
             }
 
@@ -3226,6 +3232,7 @@ export default function Home() {
                 // Set Fabric Received (FR - Default Planned) on fabric arrival date if empty
                 if (!formattedRow[fabISO]) {
                   formattedRow[fabISO] = "FR";
+                  fabricFrKey = fabISO;
                 }
               }
             }
@@ -4126,9 +4133,49 @@ export default function Home() {
               }
             }
 
+            // Sent to NY (DHL on the chart) and the matched row already has an NY in its plan: mark
+            // the row's OWN planned NY green (per plan: the bare plan and every per-leg
+            // "<date>_<PLANT>" plan) instead of stamping a new NY on the DHL date. The DHL-date key
+            // used to also count as an "incoming date" below, which wiped the whole existing plan
+            // and left just NY|P on the DHL date (GVF27-014, 9/18) — every later event lost.
+            //
+            // Both chart-DERIVED dates (DHL -> NY, fabric-in -> FR) are only for rows with no plan
+            // yet: on a row that already has events they're dropped here, so they never count as
+            // "incoming dates" and never trigger the wipe below.
+            const nyPassKeys: string[] = [];
+            if (existingMatchHasEvents && fabricFrKey && formattedRow[fabricFrKey] === "FR") {
+              delete formattedRow[fabricFrKey];
+            }
+            if (existingMatch && dhlNyKey) {
+              const nyGroups = new Map<string, string[]>(); // "" = bare plan, else leg suffix
+              Object.entries(existingMatch).forEach(([k, v]) => {
+                const m = k.match(/^(\d{4}-\d{2}-\d{2})(_.+)?$/);
+                if (!m || typeof v !== "string" || !v.trim()) return;
+                if (parseEventValue(v)?.code.toUpperCase() !== "NY") return;
+                const g = m[2] || "";
+                nyGroups.set(g, [...(nyGroups.get(g) || []), k]);
+              });
+              if (nyGroups.size > 0) {
+                delete formattedRow[dhlNyKey];
+                const dhlTime = Date.parse(dhlNyKey);
+                nyGroups.forEach((keys) => {
+                  const planned = keys.filter(
+                    (k) => parseEventValue(String(existingMatch![k]))?.status === "planned",
+                  );
+                  if (planned.length === 0) return; // this plan's NY already has a verdict
+                  const nearest = planned.reduce((a, b) =>
+                    Math.abs(Date.parse(b.slice(0, 10)) - dhlTime) < Math.abs(Date.parse(a.slice(0, 10)) - dhlTime) ? b : a,
+                  );
+                  nyPassKeys.push(nearest); // applied after the merge below
+                });
+              }
+            }
+
             // If fresh Excel import provides date keys for this row, clear legacy auto-scheduled date keys from existingMatch
+            // The DHL-date NY fallback (row has a plan but no NY in it) is added, never a reason to
+            // wipe that plan.
             const hasIncomingDates = Object.keys(formattedRow).some((k) =>
-              k.match(/^\d{4}-\d{2}-\d{2}$/) && formattedRow[k]
+              k.match(/^\d{4}-\d{2}-\d{2}$/) && formattedRow[k] && k !== dhlNyKey
             );
             // A Planning Sheet import is purely additive — never wipe dates the database already
             // has just because this particular row/file doesn't happen to also cover them (e.g.
@@ -4202,6 +4249,10 @@ export default function Home() {
                   mergedRow[k] = v;
                 }
               }
+            });
+
+            nyPassKeys.forEach((k) => {
+              (mergedRow as Record<string, unknown>)[k] = encodeEventValue("NY", "pass");
             });
 
             // Fallback: the allocation chart sometimes leaves Plant (col11) blank on rows whose

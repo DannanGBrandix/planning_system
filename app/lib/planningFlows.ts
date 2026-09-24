@@ -1054,9 +1054,15 @@ export function getEventsForChainStage(
   if (plantFlowIsProcessText(plantFlowRaw)) return null;
 
   const PLANT_CHAIN_SPLIT = />>|->|=>|,|\+|\/|>/;
+  // A "/" INSIDE one PLANT FLOW stage lists alternative plants for that stage (a cross-dev
+  // split), NOT further stages: "BFL (WA01055) >>ANTLER/REGAL/EXPO" is BFL -> one of
+  // ANTLER/REGAL/EXPO, i.e. 2 stages. Splitting on "/" here made it a 4-plant chain, so the EXPO
+  // row counted as the LAST stage and only got PPS onward (SEWIN/GMT/RDPS were handed to
+  // phantom earlier plants). Confirmed against real data: GVF27-012 / 10356717 (C2).
+  const STAGE_SPLIT = />>|->|=>|,|\+|>/;
   const segments = String(plantFlowRaw || "")
     .toUpperCase()
-    .split(PLANT_CHAIN_SPLIT)
+    .split(STAGE_SPLIT)
     .map((s) => s.trim())
     .filter(Boolean);
   if (segments.length < 2) return null;
@@ -1077,7 +1083,9 @@ export function getEventsForChainStage(
 
   const plant = String(plantRaw || "").trim().toUpperCase();
   if (!plant) return null;
-  const plantMatches = (s: string) => s === plant || plant.includes(s) || s.includes(plant);
+  const plantMatches = (seg: string) =>
+    seg.split("/").map((s) => s.trim()).filter(Boolean)
+      .some((s) => s === plant || plant.includes(s) || s.includes(plant));
   const myIndex = segments.findIndex(plantMatches);
   if (myIndex === -1) return null;
 
