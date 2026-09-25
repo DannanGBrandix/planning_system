@@ -229,6 +229,25 @@ export function getLastRowsSync(): RowsSyncInfo | null {
 // Fetch all rows from backend, filtered by role for team isolation.
 // `fresh: true` (the "Refresh now" button) tells the server to bypass its cache and re-read the
 // database; the server throttles this to once per 5 s.
+// Archived (older) versions of rows — is_current = false. Never part of getAllRows (so dashboards,
+// imports and matching only ever see current versions); used by the Revision History modal and by
+// Plant Performance, where an older version's completed work still counts for its plant.
+export async function getArchivedRows(): Promise<EmbellishmentRow[]> {
+  try {
+    const response = await apiFetch(`/rows-archived`);
+    if (!response.ok) throw new Error(`Failed to fetch archived rows (HTTP ${response.status})`);
+    const rows: EmbellishmentRow[] = await response.json();
+    return rows.map((r) => {
+      if (typeof r.col4 === "string") r.col4 = cleanSeason(r.col4);
+      if (typeof r.col3 === "string") r.col3 = cleanCategory(r.col3);
+      return { ...r, is_current: false };
+    });
+  } catch (err) {
+    console.warn("getArchivedRows failed:", err);
+    return [];
+  }
+}
+
 export async function getAllRows(role?: string, opts?: { fresh?: boolean }): Promise<EmbellishmentRow[]> {
   try {
     // Build query string: teams get filtered results, privileged roles get all rows

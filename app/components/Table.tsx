@@ -227,12 +227,16 @@ function getEventCellStyle(rawValue: string) {
 interface TableProps {
   rows: EmbellishmentRow[];
   allRows?: EmbellishmentRow[];
+  // Current + archived versions — ONLY for the Revision History modal (exports must never see
+  // archived versions' events).
+  historyRows?: EmbellishmentRow[];
   columns: ColumnMapping;
   onUpdateRow: (row: EmbellishmentRow) => void;
   onDeleteRow: (id: string) => void;
   onDeleteMultipleRows: (ids: string[]) => void;
   onDuplicateRow: (row: EmbellishmentRow) => void;
   onForceReplan?: (rowId: string) => void;
+  onNewVersion?: (row: EmbellishmentRow) => void;
   onClearRowPlan?: (rowId: string, legPlant?: string) => void | Promise<boolean | void>;
   onSetPlanStartDate?: (rowId: string, startDateKey: string, legPlant?: string) => void;
   onApplyPlanFlow?: (rowId: string, dateKey: string, flowId: number) => void | Promise<void>;
@@ -246,12 +250,14 @@ interface TableProps {
 export default function Table({
   rows,
   allRows,
+  historyRows,
   columns,
   onUpdateRow,
   onDeleteRow,
   onDeleteMultipleRows,
   onDuplicateRow,
   onForceReplan,
+  onNewVersion,
   onClearRowPlan,
   onSetPlanStartDate,
   onApplyPlanFlow,
@@ -2168,6 +2174,17 @@ export default function Table({
                             </svg>
                           </button>
                         )}
+                        {onNewVersion && (
+                          <button
+                            onClick={() => onNewVersion(row)}
+                            className="p-1 text-slate-400 hover:text-violet-400 hover:bg-violet-950/40 rounded-md transition-colors"
+                            title="New Version — re-develop with a different Application Form / Fabric / Plant. Keeps this version's plan & plant history; starts a fresh plan."
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h10M7 12h6m-6 5h4M17 14v6m-3-3h6M5 3h14a2 2 0 012 2v6M3 5v14a2 2 0 002 2h6" />
+                            </svg>
+                          </button>
+                        )}
                         {onClearRowPlan && onSetPlanStartDate && (
                           <button
                             onClick={async () => {
@@ -2571,7 +2588,7 @@ export default function Table({
         <HistoryModal
           sharedId={historySharedId}
           onClose={() => setHistorySharedId(null)}
-          allRows={allRows || rows} // rows containing both current and historic versions
+          allRows={historyRows || allRows || rows} // rows containing both current and historic versions
           columns={columns}
         />
       )}

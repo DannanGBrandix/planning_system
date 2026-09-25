@@ -6,6 +6,7 @@ import { encodeEventValue, parseEventValue } from "./lib/eventCodes";
 import { loadCodes } from "./lib/codesStore";
 import {
   getAllRows,
+  getArchivedRows,
   saveRow,
   saveMultipleRows,
   deleteRow,
@@ -61,6 +62,7 @@ import GlobalSidebar from "./components/GlobalSidebar";
 import PlantSchedulesView from "./components/PlantSchedulesView";
 import ScoreCardDashboard from "./components/ScoreCardDashboard";
 import PlantPerformanceView from "./components/PlantPerformanceView";
+import NewVersionModal, { NewVersionInput } from "./components/NewVersionModal";
 import FabricDispatchView from "./components/FabricDispatchView";
 import TriggerManagementView from "./components/TriggerManagementView";
 import ReportsView from "./components/ReportsView";
@@ -125,6 +127,13 @@ function classifyFillColor(rgbHex: string): "grey" | "green" | "pink" | "none" {
 export default function Home() {
   // App states
   const [rows, setRows] = useState<EmbellishmentRow[]>([]);
+  // Older versions (is_current = false) — loaded separately, never mixed into `rows` (dashboards,
+  // imports and matching only see current versions). Used by Revision History + Plant Performance.
+  const [archivedRows, setArchivedRows] = useState<EmbellishmentRow[]>([]);
+  const [newVersionRow, setNewVersionRow] = useState<EmbellishmentRow | null>(null);
+  useEffect(() => {
+    getArchivedRows().then(setArchivedRows);
+  }, []);
   const [draftRows, setDraftRows] = useState<EmbellishmentRow[]>([]);
   const [columns, setColumns] = useState<ColumnMapping>({});
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -1160,6 +1169,92 @@ export default function Home() {
   // check entirely and always versions + reschedules, exactly like the Ground-color-changed path
   // does, but explicitly starting from today (not "next working day fallback") since a C+P/
   // Resubmit replan is meant to restart right away.
+  // "New Version": the item is being re-developed with a different Application Form / Fabric /
+  // Plant after it was already planned and submitted. The current row is archived EXACTLY as it is
+  // (every planning event, plant and submission detail kept — visible in Revision History and still
+  // counted for its plant in Plant Performance), and version N+1 starts from the edited fields with
+  // a fresh plan from the chosen start date. Unlike Replan (handleForceReplan), the planner edits
+  // the development fields first, picks the start date, and can reset submission tracking.
+  const TRACKING_KEYS_FOR_NEW_VERSION = [
+    "col22", "col24", "col34", "col35", "col40", "col41", "col42",
+    "awb1", "awb2", "awb1Date", "awb2Date", "dropDate",
+  ];
+  const handleCreateNewVersion = async (originalRow: EmbellishmentRow, input: NewVersionInput) => {
+    try {
+      const archivedOldRow: EmbellishmentRow = { ...originalRow, is_current: false };
+
+      const base: EmbellishmentRow = { ...originalRow };
+      Object.keys(base).forEach((k) => {
+        if (/^\d{4}-\d{2}-\d{2}(_.*)?$/.test(k) || k.startsWith("_leg_")) {
+          (base as Record<string, unknown>)[k] = "";
+        }
+      });
+      if (input.clearTracking) {
+        TRACKING_KEYS_FOR_NEW_VERSION.forEach((k) => {
+          if (k in base) (base as Record<string, unknown>)[k] = "";
+        });
+        Object.keys(base).forEach((k) => {
+          if (k.startsWith("nycv:")) (base as Record<string, unknown>)[k] = "";
+        });
+        // col20 doubles as the AOQ date — only clear it when it holds an approval VERDICT.
+        if (/approv|reject|resubmit|c\s*\+\s*p|drop|hold/i.test(String(base.col20 || ""))) base.col20 = "";
+      }
+
+      const newVersionBase: EmbellishmentRow = {
+        ...base,
+        col15: input.col15.trim(),
+        col27: input.col27.trim(),
+        col13: input.col13.trim(),
+        col11: input.col11.trim(),
+        col12: input.col12.trim(),
+        id: `row_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        shared_id: originalRow.shared_id || originalRow.id,
+        version_number: (Number(originalRow.version_number) || 1) + 1,
+        is_current: true,
+        change_reason: input.reason.trim(),
+        changed_date: new Date().toISOString(),
+      };
+
+      const newVersion = autoScheduleEmbellishmentRow(
+        newVersionBase,
+        undefined,
+        input.startDate,
+      ) as EmbellishmentRow;
+      const producedDates = Object.keys(newVersion).some(
+        (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && String((newVersion as Record<string, unknown>)[k] || "").trim(),
+      );
+      if (!producedDates) {
+        alert(
+          "Can't build a plan for the new version — it needs both a Plant and an S-Off Requirement. " +
+          "Fill those in and try again. Nothing was changed.",
+        );
+        return;
+      }
+      newVersion.col47 = derivePlanStatus(newVersion as unknown as Record<string, unknown>);
+
+      const logEntry: AuditLog = {
+        id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        timestamp: new Date().toISOString(),
+        styleCode: String(originalRow.col5 || "N/A"),
+        field: "System Row Operations",
+        oldValue: `v${Number(originalRow.version_number) || 1} archived (App Form: ${originalRow.col15 || "-"}, Fabric: ${originalRow.col13 || "-"})`,
+        newValue: `v${newVersion.version_number} planned from ${input.startDate} (App Form: ${newVersion.col15 || "-"}, Fabric: ${newVersion.col13 || "-"}) — ${input.reason.trim()}`,
+        userRole: currentRole,
+      };
+
+      await saveMultipleRows([archivedOldRow, newVersion]);
+      await saveAuditLog(logEntry);
+
+      setRows((prev) => prev.filter((r) => r.id !== originalRow.id).concat(newVersion));
+      setArchivedRows((prev) => [...prev.filter((r) => r.id !== originalRow.id), archivedOldRow]);
+      setAuditLogs((prev) => [logEntry, ...prev]);
+      setNewVersionRow(null);
+    } catch (err) {
+      console.error("Error creating new version:", err);
+      alert("Failed to create the new version. Nothing was changed.");
+    }
+  };
+
   const handleForceReplan = async (rowId: string) => {
     try {
       const originalRow = rows.find((r) => r.id === rowId);
@@ -1577,9 +1672,9 @@ export default function Home() {
         shared_id: rowId,
         version_number: 1,
         is_current: true,
-        // Marks this as a hand-created row. Tracking-chart / Excel imports deliberately never
-        // merge into a manual row even when the graphic matches — they insert their own separate
-        // row instead, so the planner keeps both (see claimedDbIds seeding in processImportFile).
+        // Marks this as a hand-created row. Tracking-chart / Excel imports only merge into a
+        // manual row as a last resort — when no imported row matches (see isManualRow in
+        // processImportFile).
         manual_entry: "1",
       };
       for (let i = 1; i <= 35; i++) {
@@ -2772,15 +2867,15 @@ export default function Home() {
         const seenFileNewKeysMap = new Map<string, string>();
         const claimedDbIds = new Set<string>();
 
-        // Hand-created planning rows ("Add Planning Row", or a published team draft) are seeded as
-        // already-claimed so NO match strategy below can ever pick one as the existing row to merge
-        // into. A tracking chart / allocation chart almost always carries the same graphic as a row
-        // the planner already entered by hand; without this, the import silently merges onto that
-        // manual row, half-filling its columns instead of creating the separate tracked row the
-        // planner expects. Marked rows stay untouched and the imported item lands as its own new row.
-        rows.forEach((r) => {
-          if (String(r.manual_entry || "") === "1") claimedDbIds.add(r.id);
-        });
+        // Hand-created planning rows ("Add Planning Row", or a published team draft) are a
+        // LAST-RESORT match: every strategy below first runs against imported rows only, and only
+        // when none matches does it run again allowing manual rows. So an item that already has an
+        // imported twin keeps updating that twin (manual row left alone), but an item that exists
+        // ONLY as a hand-added row merges into it instead of being created as a new duplicate —
+        // per the planner (2026-09-24): "if it's hand added but matching the tracking chart, no
+        // need to import them as new". (Before, manual rows were never matched at all, so deleting
+        // the imported twin made every re-import recreate it.)
+        const isManualRow = (r: EmbellishmentRow) => String(r.manual_entry || "") === "1";
 
         // ── Everything below is row-INVARIANT (same for all rows in the file) ──
         // Previously these were declared inside the rawData.map() callback, which
@@ -3655,6 +3750,24 @@ export default function Home() {
               );
             };
 
+            // BRANDING rows (Graphic Type col19, on either side — the Graphic Development file has
+            // no Graphic Type column, so usually it's the DB row that says so): one Style + Graphic
+            // + Combo is developed on several body colours, each its own row ("VV-14744" / 10343599
+            // / C1 on Pink Cocktail AND on Cheetah). Without Ground in the identity, each file row
+            // grabbed whichever same-Style/Graphic/Combo row was still unclaimed and overwrote its
+            // Ground. Blank-tolerant, and loose on purpose — grounds are written with and without
+            // colour codes / prefixes ("VS Med Htr Grey" vs "VS Med Htr Grey 1NG0"), so it's a match
+            // when one compacted value contains the other. Non-branding rows are unaffected.
+            const compactGround = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            const incomingGroundKey = compactGround(formattedRow["col8"]);
+            const incomingIsBranding = /branding/i.test(String(formattedRow["col19"] || ""));
+            const groundCompatible = (r: EmbellishmentRow) => {
+              if (!incomingIsBranding && !/branding/i.test(String(r.col19 || ""))) return true;
+              const dbGroundKey = compactGround(r.col8);
+              if (!incomingGroundKey || !dbGroundKey) return true;
+              return dbGroundKey.includes(incomingGroundKey) || incomingGroundKey.includes(dbGroundKey);
+            };
+
             // Same blank-tolerant guard, for Fabric Reference (col13). A single embellishment item
             // routinely names more than one fabric — a body fabric plus an applique/lace fabric
             // ("FB # 22693, LC # 09947") — and different source sheets list a different subset or a
@@ -3873,89 +3986,102 @@ export default function Home() {
             // colorways here. seasonCategoryCompatible below still enforces that a CKNA Men's row
             // only matches CKNA Men's / legacy-CK rows for the same season — never CKNA Women's,
             // never a different season, even though those can share a Graphic+Ground.
-            if (
-              incomingGraphic &&
-              incomingGround &&
-              (Boolean(data.ckCategory) || isCkFamilyCategory(incomingCategory))
-            ) {
-              const stripWs = (v: string) => v.replace(/\s+/g, "");
-              const incomingGroundCompact = stripWs(incomingGround);
-              const matches = rows.filter(
-                (r) =>
-                  !claimedDbIds.has(r.id) &&
-                  normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
-                  stripWs(normalize(String(String(String(String(r.col8 || "")))))) === incomingGroundCompact &&
-                  seasonCategoryCompatible(r) &&
-                  categoryLineCompatible(r)
-              );
-              if (matches.length >= 1) {
-                existingMatch = matches[0];
-                matchedFromDb = true;
-              }
-            }
-
-            // Strategy 1: Exact match on Graphic + Combo (Normalized) + Style
-            if (!existingMatch && incomingGraphic && !ckGraphicOnlyIdentity) {
-              const matches = rows.filter(
-                (r) =>
-                  !claimedDbIds.has(r.id) &&
-                  normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
-                  normalizeCombo(String(String(String(String(r.col6 || ""))))) === incomingCombo &&
-                  styleMatches(r.col5) &&
-                  seasonCategoryCompatible(r) &&
-                  fabricCompatible(r) &&
-                  categoryLineCompatible(r)
-              );
-              if (matches.length >= 1) {
-                existingMatch = matches[0];
-                matchedFromDb = true;
-              }
-            }
-
-            // Strategy 1b: Match on Style + Graphic Number (e.g. 527) + Combo
-            if (!existingMatch && incomingGraphicNum && !ckGraphicOnlyIdentity) {
-              const matches = rows.filter(
-                (r) =>
-                  !claimedDbIds.has(r.id) &&
-                  styleMatches(r.col5) &&
-                  normalizeCombo(String(String(String(String(r.col6 || ""))))) === incomingCombo &&
-                  extractGraphicNum(normalize(String(String(String(String(r.col7 || "")))))) === incomingGraphicNum &&
-                  seasonCategoryCompatible(r) &&
-                  fabricCompatible(r) &&
-                  categoryLineCompatible(r)
-              );
-              if (matches.length >= 1) {
-                existingMatch = matches[0];
-                matchedFromDb = true;
-              }
-            }
-
-
-
-            // Strategy 4: VS Excel format — Combo ends with the short suffix
-            if (
-              !existingMatch &&
-              incomingGraphic &&
-              incomingCombo &&
-              !incomingCombo.includes("-") &&
-              !ckGraphicOnlyIdentity
-            ) {
-              const matches = rows.filter((r) => {
-                const dbCombo = normalizeCombo(String(String(String(String(r.col6 || "")))));
-                const dbComboSuffix = dbCombo.split(/[-\s]/).pop() || "";
-                return (
-                  !claimedDbIds.has(r.id) &&
-                  normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
-                  styleMatches(r.col5) &&
-                  dbComboSuffix === incomingCombo &&
-                  seasonCategoryCompatible(r) &&
-                  fabricCompatible(r) &&
-                  categoryLineCompatible(r)
+            // Pass 1: imported rows only. Pass 2 (only if pass 1 found nothing): hand-added rows
+            // too — see isManualRow above.
+            for (const allowManual of [false, true]) {
+              if (existingMatch) break;
+              if (
+                !existingMatch &&
+                incomingGraphic &&
+                incomingGround &&
+                (Boolean(data.ckCategory) || isCkFamilyCategory(incomingCategory))
+              ) {
+                const stripWs = (v: string) => v.replace(/\s+/g, "");
+                const incomingGroundCompact = stripWs(incomingGround);
+                const matches = rows.filter(
+                  (r) =>
+                    !claimedDbIds.has(r.id) &&
+                    (allowManual || !isManualRow(r)) &&
+                    normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
+                    stripWs(normalize(String(String(String(String(r.col8 || "")))))) === incomingGroundCompact &&
+                    seasonCategoryCompatible(r) &&
+                    categoryLineCompatible(r)
                 );
-              });
-              if (matches.length >= 1) {
-                existingMatch = matches[0];
-                matchedFromDb = true;
+                if (matches.length >= 1) {
+                  existingMatch = matches[0];
+                  matchedFromDb = true;
+                }
+              }
+
+              // Strategy 1: Exact match on Graphic + Combo (Normalized) + Style
+              if (!existingMatch && incomingGraphic && !ckGraphicOnlyIdentity) {
+                const matches = rows.filter(
+                  (r) =>
+                    !claimedDbIds.has(r.id) &&
+                    (allowManual || !isManualRow(r)) &&
+                    normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
+                    normalizeCombo(String(String(String(String(r.col6 || ""))))) === incomingCombo &&
+                    styleMatches(r.col5) &&
+                    seasonCategoryCompatible(r) &&
+                    fabricCompatible(r) &&
+                    groundCompatible(r) &&
+                    categoryLineCompatible(r)
+                );
+                if (matches.length >= 1) {
+                  existingMatch = matches[0];
+                  matchedFromDb = true;
+                }
+              }
+
+              // Strategy 1b: Match on Style + Graphic Number (e.g. 527) + Combo
+              if (!existingMatch && incomingGraphicNum && !ckGraphicOnlyIdentity) {
+                const matches = rows.filter(
+                  (r) =>
+                    !claimedDbIds.has(r.id) &&
+                    (allowManual || !isManualRow(r)) &&
+                    styleMatches(r.col5) &&
+                    normalizeCombo(String(String(String(String(r.col6 || ""))))) === incomingCombo &&
+                    extractGraphicNum(normalize(String(String(String(String(r.col7 || "")))))) === incomingGraphicNum &&
+                    seasonCategoryCompatible(r) &&
+                    fabricCompatible(r) &&
+                    groundCompatible(r) &&
+                    categoryLineCompatible(r)
+                );
+                if (matches.length >= 1) {
+                  existingMatch = matches[0];
+                  matchedFromDb = true;
+                }
+              }
+
+
+
+              // Strategy 4: VS Excel format — Combo ends with the short suffix
+              if (
+                !existingMatch &&
+                incomingGraphic &&
+                incomingCombo &&
+                !incomingCombo.includes("-") &&
+                !ckGraphicOnlyIdentity
+              ) {
+                const matches = rows.filter((r) => {
+                  const dbCombo = normalizeCombo(String(String(String(String(r.col6 || "")))));
+                  const dbComboSuffix = dbCombo.split(/[-\s]/).pop() || "";
+                  return (
+                    !claimedDbIds.has(r.id) &&
+                    (allowManual || !isManualRow(r)) &&
+                    normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
+                    styleMatches(r.col5) &&
+                    dbComboSuffix === incomingCombo &&
+                    seasonCategoryCompatible(r) &&
+                    fabricCompatible(r) &&
+                    groundCompatible(r) &&
+                    categoryLineCompatible(r)
+                  );
+                });
+                if (matches.length >= 1) {
+                  existingMatch = matches[0];
+                  matchedFromDb = true;
+                }
               }
             }
 
@@ -4025,7 +4151,11 @@ export default function Home() {
             }
 
             if (existingMatch) {
-              matchType = "style"; // Matched exact existing record in DB
+              // Only a real DATABASE match is an update. existingMatch can also be the new row an
+              // EARLIER line of this same file created (intra-file compKey above) — a duplicate line
+              // in the file (INQ15: 10350350 / C1 / VV 14744 / Cheetah on lines 9 and 14). That item
+              // doesn't exist yet, so it's still "new" (both lines save into one new row).
+              if (matchedFromDb) matchType = "style"; // Matched exact existing record in DB
               claimedDbIds.add(existingMatch.id);
             }
 
@@ -5440,6 +5570,12 @@ export default function Home() {
     [rows],
   );
 
+  // Revision History needs every version of a graphic: the current rows plus the archived ones.
+  const historyRows = useMemo(() => {
+    const ids = new Set(rows.map((r) => r.id));
+    return [...rows, ...archivedRows.filter((r) => !ids.has(r.id))];
+  }, [rows, archivedRows]);
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const actionCenterCount = useMemo(() => {
     let count = 0;
@@ -5475,6 +5611,13 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-zinc-50 dark:bg-[#09090b] font-sans text-zinc-900 dark:text-zinc-150 overflow-hidden">
+      {newVersionRow && (
+        <NewVersionModal
+          row={newVersionRow}
+          onCancel={() => setNewVersionRow(null)}
+          onConfirm={(input) => handleCreateNewVersion(newVersionRow, input)}
+        />
+      )}
       <GlobalSidebar
         currentView={viewMode}
         setViewMode={setViewMode}
@@ -5567,7 +5710,7 @@ export default function Home() {
           ) : viewMode === "scoreCard" ? (
             <ScoreCardDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
           ) : viewMode === "plantPerformance" ? (
-            <PlantPerformanceView rows={allCurrentVersionRows} />
+            <PlantPerformanceView rows={allCurrentVersionRows} archivedRows={archivedRows} />
           ) : viewMode === "plantSchedules" ? (
             <PlantSchedulesView rows={currentVersionRows} />
           ) : viewMode === "fabricDispatch" ? (
@@ -5860,12 +6003,14 @@ export default function Home() {
                     <Table
                       rows={displayedRows}
                       allRows={rows}
+                      historyRows={historyRows}
                       columns={columns}
                       onUpdateRow={handleUpdateRow}
                       onDeleteRow={handleDeleteRow}
                       onDeleteMultipleRows={handleDeleteMultipleRows}
                       onDuplicateRow={handleDuplicateRow}
                       onForceReplan={handleForceReplan}
+                      onNewVersion={(row) => setNewVersionRow(row)}
                       onClearRowPlan={handleClearRowPlan}
                       onSetPlanStartDate={handleSetPlanStartDate}
                       onApplyPlanFlow={(rowId, dateKey, flowId) =>

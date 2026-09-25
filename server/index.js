@@ -200,6 +200,17 @@ app.get("/api/rows", async (req, res) => {
   }
 });
 
+// Archived versions (is_current = false): Revision History + Plant Performance only. Must be
+// registered before "/api/rows/:id"-style routes; it's a GET so it never collides with PUT /:id.
+app.get("/api/rows-archived", async (req, res) => {
+  try {
+    res.json(await db.getArchivedRows());
+  } catch (err) {
+    console.error("Error in GET /api/rows-archived:", err);
+    res.status(500).json({ error: "Failed to fetch archived rows: " + err.message });
+  }
+});
+
 // Live rows-cache counters (hits / misses / cache age / last refill). Open it in a browser:
 //   http://localhost:5001/api/rows-cache
 app.get("/api/rows-cache", (req, res) => {

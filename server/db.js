@@ -263,14 +263,54 @@ const cacheStats = {
   stale: 0,
   refillErrors: 0,
   invalidations: 0,
+  patches: 0, // single-row writes applied to the cached copy in place (no refill needed)
   supabasePageRequests: 0,
   lastRefill: null, // { at, rows, ms }
 };
 
+// Archived versions (is_current = false) — kept OUT of the main rows read so dashboards / import
+// matching never see them, but loaded on their own (tiny: a few dozen rows) for the Revision
+// History modal and Plant Performance, where an older version's work still counts for its plant.
+let archivedRowsCache = null; // { rows, at }
+
 function invalidateRowsCache() {
   rowsCacheGen++;
   rowsCache = null;
+  archivedRowsCache = null;
   cacheStats.invalidations++;
+}
+
+// A single-row write (saveRow / upsertMultipleRows / deleteRow / deleteMultipleRows) updates just
+// those rows in the cached copy instead of dropping the whole cache — otherwise the 15 s poll right
+// after every edit re-downloaded the full table (~0.64 MB per edit). `savedDbRows` are the rows as
+// Supabase returned them from the write (`.select()`), so the cache holds exactly what's stored.
+// Bulk jobs (import via saveAllRows, restore, clear, seed) still invalidate outright.
+function patchRowsCache(savedDbRows, deletedIds) {
+  // An in-flight refill may have read the table BEFORE this write — never let it land.
+  rowsCacheGen++;
+  cacheStats.patches++;
+  // A patched row may have just become (or stopped being) an archived version.
+  if ((savedDbRows || []).some((r) => r.is_current === false || r.is_current === "false") || (deletedIds || []).length) {
+    archivedRowsCache = null;
+  }
+  if (!rowsCache) return;
+  const updates = new Map();
+  (savedDbRows || []).forEach((dbRow) => updates.set(dbRow.id, formatDbRow(dbRow)));
+  const removed = new Set(deletedIds || []);
+  const next = [];
+  rowsCache.rows.forEach((r) => {
+    if (removed.has(r.id)) return;
+    if (updates.has(r.id)) {
+      const u = updates.get(r.id);
+      updates.delete(r.id);
+      if (isUsableRow(u)) next.push(u);
+      return;
+    }
+    next.push(r);
+  });
+  // Brand-new rows: newest first, same as the refill's created_at DESC order.
+  const added = Array.from(updates.values()).filter(isUsableRow);
+  rowsCache = { rows: [...added, ...next], at: rowsCache.at };
 }
 
 function getRowsCacheStats() {
@@ -305,6 +345,33 @@ setInterval(() => {
 // under that id) — excluding it in the query saves that download on every cache refill.
 const EXCLUDED_ROW_IDS = ["bulk"];
 
+// Map PostgreSQL structures back: merge "schedule" JSONB values directly into row object
+// (fromDb first, so a named database's `category` etc. become the app's col3 etc.)
+function formatDbRow(dbRow) {
+  const { schedule, created_at, ...rest } = rowColumns.fromDb(dbRow, namedColumns);
+  return {
+    ...rest,
+    ...(schedule || {}),
+  };
+}
+
+// Filter out invalid/empty rows and soft-archived rows (is_current === false)
+function isUsableRow(r) {
+  if (EXCLUDED_ROW_IDS.includes(r.id)) return false;
+  if (r.is_current === false || r.is_current === "false") return false;
+  return (
+    (r.col2 || "").trim() !== "" ||
+    (r.col3 || "").trim() !== "" ||
+    (r.col4 || "").trim() !== "" ||
+    (r.col5 || "").trim() !== "" ||
+    (r.col6 || "").trim() !== "" ||
+    (r.col7 || "").trim() !== "" ||
+    (r.col8 || "").trim() !== "" ||
+    (r.col9 || "").trim() !== "" ||
+    (r.col24 || "").trim() !== ""
+  );
+}
+
 async function fetchAllRowsFromSupabase() {
   const startedAt = Date.now();
   // Supabase caps single queries at 1000 rows by default.
@@ -335,31 +402,7 @@ async function fetchAllRowsFromSupabase() {
     from += PAGE_SIZE;
   }
 
-  // Map PostgreSQL structures back: merge "schedule" JSONB values directly into row object
-  // (fromDb first, so a named database's `category` etc. become the app's col3 etc.)
-  const formattedRows = allData.map((dbRow) => {
-    const { schedule, created_at, ...rest } = rowColumns.fromDb(dbRow, namedColumns);
-    return {
-      ...rest,
-      ...(schedule || {}),
-    };
-  });
-
-  // Filter out invalid/empty rows and soft-archived rows (is_current === false)
-  const rows = formattedRows.filter((r) => {
-    if (r.is_current === false || r.is_current === "false") return false;
-    return (
-      (r.col2 || "").trim() !== "" ||
-      (r.col3 || "").trim() !== "" ||
-      (r.col4 || "").trim() !== "" ||
-      (r.col5 || "").trim() !== "" ||
-      (r.col6 || "").trim() !== "" ||
-      (r.col7 || "").trim() !== "" ||
-      (r.col8 || "").trim() !== "" ||
-      (r.col9 || "").trim() !== "" ||
-      (r.col24 || "").trim() !== ""
-    );
-  });
+  const rows = allData.map(formatDbRow).filter(isUsableRow);
   const ms = Date.now() - startedAt;
   cacheStats.lastRefill = { at: new Date().toISOString(), rows: rows.length, ms };
   console.log(`[DB] rows cache MISS -> refilled from Supabase: ${rows.length} rows in ${ms} ms`);
@@ -435,6 +478,35 @@ module.exports = {
 
   getRowsCacheStats,
 
+  // Archived (is_current = false) versions only, app format. Cached like the main read; dropped on
+  // any write that archives/deletes a row, and by the TTL.
+  async getArchivedRows() {
+    await ensureDb();
+    if (!(useSupabase && supabase)) {
+      return inMemoryRows.filter((r) => r.is_current === false || r.is_current === "false");
+    }
+    if (archivedRowsCache && Date.now() - archivedRowsCache.at < ROWS_CACHE_TTL_MS) {
+      return archivedRowsCache.rows;
+    }
+    const all = [];
+    const PAGE_SIZE = 1000;
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("rows")
+        .select("*")
+        .eq("is_current", false)
+        .order("id", { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE_SIZE) break;
+    }
+    const rows = all.map(formatDbRow).filter((r) => !EXCLUDED_ROW_IDS.includes(r.id));
+    archivedRowsCache = { rows, at: Date.now() };
+    return rows;
+  },
+
   // Get all planning rows, optionally filtered by team ownership
   async getAllRows(teamOwner) {
     await ensureDb();
@@ -498,8 +570,9 @@ module.exports = {
 
       const dbRow = rowColumns.toDb({ ...specFields, schedule: mergedSchedule }, namedColumns);
 
-      const { error } = await supabase.from("rows").upsert(dbRow);
+      const { data: saved, error } = await supabase.from("rows").upsert(dbRow).select("*");
       if (error) throw error;
+      patchRowsCache(saved);
     } else {
       const idx = inMemoryRows.findIndex((r) => r.id === row.id);
       if (idx > -1) {
@@ -592,9 +665,11 @@ module.exports = {
 
       // Batch the upsert in small chunks of 25 with pacing to handle large datasets reliably
       const UPLOAD_BATCH = 25;
+      const savedRows = [];
       for (let i = 0; i < dbRows.length; i += UPLOAD_BATCH) {
         const batch = dbRows.slice(i, i + UPLOAD_BATCH);
-        const { error } = await supabase.from("rows").upsert(batch);
+        const { data: saved, error } = await supabase.from("rows").upsert(batch).select("*");
+        if (saved) savedRows.push(...saved);
         if (error) {
           console.error(`Error in Supabase upsert (batch ${i}-${i + batch.length}):`, error);
           throw new Error(error.message || JSON.stringify(error));
@@ -603,6 +678,7 @@ module.exports = {
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
       }
+      patchRowsCache(savedRows);
     } else {
       rows.forEach((row) => {
         const idx = inMemoryRows.findIndex((r) => r.id === row.id);
@@ -621,6 +697,7 @@ module.exports = {
     if (useSupabase && supabase) {
       const { error } = await supabase.from("rows").delete().eq("id", id);
       if (error) throw error;
+      patchRowsCache([], [id]);
     } else {
       inMemoryRows = inMemoryRows.filter((r) => r.id !== id);
     }
@@ -632,6 +709,7 @@ module.exports = {
     if (useSupabase && supabase) {
       const { error } = await supabase.from("rows").delete().in("id", ids);
       if (error) throw error;
+      patchRowsCache([], ids);
     } else {
       inMemoryRows = inMemoryRows.filter((r) => !ids.includes(r.id));
     }
@@ -1242,23 +1320,28 @@ module.exports = {
 // by the next read. Wrapped here rather than inside each writer so no write path can forget it.
 // (Writers that go through this module's own methods, e.g. applyPendingUpdates -> saveRow, are
 // covered too; anything that writes with its own client must call invalidateRowsCache itself.)
-[
-  "saveRow",
-  "saveAllRows",
-  "upsertMultipleRows",
-  "deleteRow",
-  "deleteMultipleRows",
-  "seedDatabase",
-  "clearAllRows",
-  "restoreBackup",
-  "applyPendingUpdates",
-].forEach((name) => {
+//
+// saveRow / upsertMultipleRows / deleteRow / deleteMultipleRows patch the cached rows themselves on
+// success (patchRowsCache) and only drop the cache when they FAIL (a half-applied write).
+// applyPendingUpdates writes through saveRow, so it's covered by those patches.
+["saveAllRows", "seedDatabase", "clearAllRows", "restoreBackup"].forEach((name) => {
   const original = module.exports[name];
   module.exports[name] = async function (...args) {
     try {
       return await original.apply(this, args);
     } finally {
       invalidateRowsCache();
+    }
+  };
+});
+["saveRow", "upsertMultipleRows", "deleteRow", "deleteMultipleRows"].forEach((name) => {
+  const original = module.exports[name];
+  module.exports[name] = async function (...args) {
+    try {
+      return await original.apply(this, args);
+    } catch (err) {
+      invalidateRowsCache();
+      throw err;
     }
   };
 });

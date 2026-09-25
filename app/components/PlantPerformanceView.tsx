@@ -25,6 +25,10 @@ import {
 
 interface PlantPerformanceViewProps {
   rows: EmbellishmentRow[];
+  // Archived (older) versions — their PPS work still counts for the plant that did it (a graphic
+  // re-developed via "New Version" must not erase the old plant's results). Only fed into the
+  // per-plant PPS tally below, never into the graphic-level AOQ verdict.
+  archivedRows?: EmbellishmentRow[];
 }
 
 const C_ONTIME = "#10b981";
@@ -85,7 +89,7 @@ function fmtDay(iso: string): string {
   return `${d} ${MONTHS[Number(m) - 1]}`;
 }
 
-export default function PlantPerformanceView({ rows }: PlantPerformanceViewProps) {
+export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantPerformanceViewProps) {
   const [yearPick, setYearPick] = useState<string>(""); // "" = newest year with PPS data
   const [month, setMonth] = useState<string>("all"); // "all" | "01".."12"
   const [season, setSeason] = useState<string>("all");
@@ -182,7 +186,7 @@ export default function PlantPerformanceView({ rows }: PlantPerformanceViewProps
     type Acc = { graphic: string; season: string; category: string; pass: boolean; fail: boolean; overdue: boolean; dates: Set<string>; reason: string };
     const acc = new Map<string, Map<string, Map<string, Acc>>>();
 
-    rows.forEach((r) => {
+    [...rows, ...archivedRows].forEach((r) => {
       if (season !== "all" && seasonBase(r.col4) !== season) return;
       if (category !== "all" && String(r.col3 || "").trim() !== category) return;
       const graphic = String(r.col7 || r.col6 || r.col5 || "").trim();
@@ -204,6 +208,9 @@ export default function PlantPerformanceView({ rows }: PlantPerformanceViewProps
           // A pending PPS on a dropped / held graphic isn't the plant's to deliver any more; a
           // verdict it already earned still stands.
           if (parsed.status === "planned" && inactive) return;
+          // An archived version's plan was superseded by the next version — only the PPS results
+          // it actually recorded count; a never-done planned PPS is not the plant's miss.
+          if (parsed.status === "planned" && r.is_current === false) return;
           const plant = t.plant.toUpperCase();
           if (excluded.has(plant)) return;
 
@@ -255,7 +262,7 @@ export default function PlantPerformanceView({ rows }: PlantPerformanceViewProps
       plants.set(plant, monthBuckets);
     });
     return { plants, years: Array.from(years).sort() };
-  }, [rows, season, category, overdueAsFailed, aliasVersion, graphicAoqByKey]);
+  }, [rows, archivedRows, season, category, overdueAsFailed, aliasVersion, graphicAoqByKey]);
 
   const year = data.years.includes(yearPick) ? yearPick : data.years[data.years.length - 1] ?? "";
 
