@@ -663,11 +663,31 @@ module.exports = {
         return rowColumns.toDb({ ...specFields, schedule: mergedSchedule }, namedColumns);
       });
 
-      // Batch the upsert in small chunks of 25 with pacing to handle large datasets reliably
+      // supabase-js bulk upsert sends the UNION of every object's keys as `columns`, and any row
+      // missing one of those keys gets it written as NULL. Callers send PARTIAL rows (the
+      // page-load heal in page.tsx sends only {id, <changed fields>}), so one row's {col11} and
+      // another's {col23} in the same batch nulled each other's Plant / S-Off date — Plant blank
+      // -> the heal then stripped the row's planning events. Upsert each distinct key-set as its
+      // own batch so a row only ever writes the columns it actually carries.
+      const groups = new Map();
+      dbRows.forEach((r) => {
+        const sig = Object.keys(r).sort().join(",");
+        if (!groups.has(sig)) groups.set(sig, []);
+        groups.get(sig).push(r);
+      });
+      const batches = [];
       const UPLOAD_BATCH = 25;
+      groups.forEach((groupRows) => {
+        for (let i = 0; i < groupRows.length; i += UPLOAD_BATCH) {
+          batches.push(groupRows.slice(i, i + UPLOAD_BATCH));
+        }
+      });
+
+      // Batch the upsert in small chunks of 25 with pacing to handle large datasets reliably
       const savedRows = [];
-      for (let i = 0; i < dbRows.length; i += UPLOAD_BATCH) {
-        const batch = dbRows.slice(i, i + UPLOAD_BATCH);
+      for (let b = 0; b < batches.length; b++) {
+        const batch = batches[b];
+        const i = b * UPLOAD_BATCH;
         const { data: saved, error } = await supabase.from("rows").upsert(batch).select("*");
         if (saved) savedRows.push(...saved);
         if (error) {
