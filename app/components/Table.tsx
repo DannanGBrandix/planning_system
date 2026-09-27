@@ -1475,6 +1475,18 @@ export default function Table({
                           {isDraft ? "Draft" : getDisplayStatus(row)}
                         </span>
                       )}
+                      {/* The Plant column is blank in the database but the row has planning events —
+                          something broke (every graphic has a plant). The server shows the plant the
+                          events were planned for (server/planningEvents.js overlay); flag it so it
+                          gets fixed. Editing the row saves that plant back. */}
+                      {String(row.__plant_missing ?? "") === "1" && (
+                        <span
+                          className="mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold inline-block bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                          title={`Plant column is blank in the database. Showing the plant the planning events were made for${row.col11 ? ` (${row.col11})` : ""} — edit the row to confirm the plant.`}
+                        >
+                          ⚠ Plant missing
+                        </span>
+                      )}
                     </td>
 
                     {/* Style (col5) Frozen Cell */}

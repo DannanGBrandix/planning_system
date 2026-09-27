@@ -40,6 +40,8 @@ const sb = createClient(URL_, KEY);
 const TABLES = [
   ["rows", "id"], ["audit_logs", "id"], ["columns_config", "id"], ["pending_updates", "id"],
   ["user_roles", "user_id"], ["reason_codes", "code"], ["event_codes", "code"], ["backups", "id"],
+  // Planning events (server/sql/planning_events.sql) — composite key "row_id,event_key".
+  ["planning_events", "row_id,event_key"], ["planning_events_history", "id"],
 ];
 
 async function exactCount(t, pk) {
@@ -69,7 +71,7 @@ async function exactCount(t, pk) {
     const write = (arr) => {
       for (const r0 of arr) {
         const r = t === "rows" ? rowColumns.fromDb(r0, named) : r0;
-        const k = String(r[pk]);
+        const k = pk.split(",").map((c) => String(r[c])).join("\u0000");
         if (seen.has(k)) throw new Error(`duplicate ${t}.${pk}=${k} while paging`);
         seen.add(k);
         fs.writeSync(fd, (first ? "\n" : ",\n") + JSON.stringify(r));
@@ -90,7 +92,11 @@ async function exactCount(t, pk) {
       for (const id of ids) write(await read(() => sb.from("backups").select("*").eq("id", id), `backup ${id}`));
     } else {
       for (let off = 0; ; off += 1000) {
-        const page = await read(() => sb.from(t).select("*").order(pk, { ascending: true }).range(off, off + 999), `${t} @${off}`);
+        const page = await read(() => {
+          let q = sb.from(t).select("*");
+          pk.split(",").forEach((c) => { q = q.order(c, { ascending: true }); });
+          return q.range(off, off + 999);
+        }, `${t} @${off}`);
         write(page);
         if (page.length < 1000) break;
       }

@@ -29,6 +29,8 @@ import {
   cleanSeason,
   cleanCategory,
   isRowSent,
+  withEventClears,
+  isPlanningEventKey,
   colorApprovalByCombo,
   comboKeyOf,
   createBackup,
@@ -74,7 +76,7 @@ import SlaWatchlistBar from "./components/SlaWatchlistBar";
 import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
 import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
-import { plantFromFlow, legPlantFlow } from "./lib/plantUtils";
+import { plantFromFlow, legPlantFlow, extractPlants } from "./lib/plantUtils";
 import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
 import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
@@ -568,6 +570,17 @@ export default function Home() {
         r = { ...r, col11: recoveredPlant } as EmbellishmentRow;
       }
 
+      // PLANNING-EVENT RULE (2026-09-27): an existing plan is only ever changed or cleared by a
+      // MANUAL action (Delete / Clear / move / replan / plant change in Edit) — never by this
+      // load-time heal. So a row that already has ANY planning event is left exactly as it is
+      // (the server refuses non-manual clears anyway, see server/planningEvents.js; re-timing
+      // here would only add duplicate dates next to the kept ones). Only a row with no plan at
+      // all gets auto-planned below.
+      const hasAnyPlanningEvent = Object.keys(r).some(
+        (k) => /^\d{4}-\d{2}-\d{2}(_.+)?$/.test(k) && String(r[k] ?? "").trim() !== "",
+      );
+      if (hasAnyPlanningEvent) return;
+
       // STRICT: a row is only eligible for planning events when it has BOTH a real Plant and a
       // real S-Off Requirement (hasCompleteAllocationContext). Process / Plant Flow / App Form /
       // AWR / an existing FR-or-NY pass-fail date are NOT substitutes — no S-Off Requirement means
@@ -848,6 +861,83 @@ export default function Home() {
           (k) => /^\d{4}-\d{2}-\d{2}(_.+)?$/.test(k) && normalizeStr(originalRow[k]) !== "",
         );
 
+        // PLANT CHANGED IN EDIT (e.g. ANTLER -> LEEMA / REGAL IMAGE) = a new plant = a new plan.
+        // This is the ONE case where an existing plan is cleared automatically: every event is
+        // cleared (soft — kept in planning_events history) and the item is replanned fresh for the
+        // new plant from today. NOT a plant swap, so the plan is kept exactly as it is:
+        //   * Plant blanked            -> something broke; the events stay (and still show)
+        //   * blank -> a plant         -> a repair, not a new plant
+        //   * a leg added / removed    -> cross-dev (ANTLER -> ANTLER/LEEMA): the first plant's plan
+        //                                 stays; the new leg is planned from a picked date
+        //   * same plant, other spelling / alias (HI EMB vs CKT)
+        // (Line breaks folded to spaces first: a chart cell like "Brandix<line break>emb" must read as one
+        // plant, not "BRANDIX" + "EMB".)
+        const plantSetOf = (v: unknown) => new Set(extractPlants(String(v ?? "").replace(/\s+/g, " ")));
+        const oldPlants = plantSetOf(originalRow.col11);
+        const newPlants = plantSetOf(updatedRow.col11);
+        const isPlantSwap =
+          hasExistingPlan &&
+          oldPlants.size > 0 &&
+          newPlants.size > 0 &&
+          ![...oldPlants].every((p) => newPlants.has(p)) &&
+          ![...newPlants].every((p) => oldPlants.has(p));
+
+        if (isPlantSwap) {
+          const fromPlant = normalizeStr(originalRow.col11);
+          const toPlant = normalizeStr(updatedRow.col11);
+          const now = new Date();
+          const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+          if (
+            !window.confirm(
+              `Plant changed: ${fromPlant} -> ${toPlant}.\n\n` +
+                `A new plant needs a new plan: all current planning events on this item will be cleared ` +
+                `and it will be replanned for ${toPlant} starting ${todayKey}.\n` +
+                `(The cleared events are kept in the planning history.)\n\nContinue?`,
+            )
+          ) {
+            return; // nothing saved — the plant edit is cancelled too
+          }
+          const cleared: Record<string, unknown> = {
+            ...originalRow,
+            ...updatedRow,
+            id: originalRow.id,
+            shared_id: originalRow.shared_id || originalRow.id,
+            version_number: Number(originalRow.version_number) || 1,
+            is_current: true,
+          };
+          Object.keys(cleared).forEach((k) => {
+            if (isPlanningEventKey(k)) cleared[k] = "";
+          });
+          const replanned = autoScheduleEmbellishmentRow({ ...cleared }, undefined, todayKey) as EmbellishmentRow;
+          const producedDates = Object.keys(replanned).some(
+            (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && String(replanned[k] ?? "").trim() !== "",
+          );
+          const outRow = (producedDates ? replanned : cleared) as EmbellishmentRow;
+          await saveRow(withEventClears(outRow, originalRow));
+          setRows((prev) => prev.map((r) => (r.id === originalRow.id ? outRow : r)));
+
+          const logEntry: AuditLog = {
+            id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            timestamp: new Date().toISOString(),
+            styleCode: String(originalRow.col5 || "N/A"),
+            field: "System Row Operations",
+            oldValue: `Plan for ${fromPlant}`,
+            newValue: producedDates
+              ? `Plant changed to ${toPlant} — plan cleared and replanned from ${todayKey}`
+              : `Plant changed to ${toPlant} — plan cleared (not replanned: needs Plant + S-Off Requirement)`,
+            userRole: currentRole,
+          };
+          await saveAuditLog(logEntry);
+          setAuditLogs((prev) => [logEntry, ...prev]);
+          if (!producedDates) {
+            alert(
+              "The old plan was cleared, but a new one couldn't be built yet — the item needs both a " +
+                "Plant and an S-Off Requirement. Fill them in, then replan.",
+            );
+          }
+          return;
+        }
+
         if (isPlanningChange && !hasExistingPlan) {
           if (isOriginalFullyComplete) {
             // Changes impact auto-planning AND previously complete -> Soft-archive old version & create new version
@@ -912,7 +1002,7 @@ export default function Home() {
               is_current: true,
             };
             const updatedInPlaceRow = autoScheduleEmbellishmentRow(updatedInPlaceRowBase);
-            await saveRow(updatedInPlaceRow);
+            await saveRow(withEventClears(updatedInPlaceRow, originalRow));
             setRows((prev) => {
               return prev.map((r) => (r.id === originalRow.id ? updatedInPlaceRow : r));
             });
@@ -974,7 +1064,9 @@ export default function Home() {
             is_current: true,
           };
 
-          await saveRow(updatedInPlaceRow);
+          // A manual edit (drag/move, Event Status panel, pass/fail, edit modal) — the events it
+          // blanks are the user's own clears, so name them for the server's event guard.
+          await saveRow(withEventClears(updatedInPlaceRow, originalRow));
 
           setRows((prev) => {
             return prev.map((r) => (r.id === originalRow.id ? updatedInPlaceRow : r));
@@ -1447,7 +1539,7 @@ export default function Home() {
         });
       }
 
-      await saveRow(clearedRow);
+      await saveRow(withEventClears(clearedRow, originalRow));
       setRows((prev) => prev.map((r) => (r.id === rowId ? clearedRow : r)));
 
       const logEntry: AuditLog = {
@@ -1619,7 +1711,7 @@ export default function Home() {
         outRow = scheduledRow;
       }
 
-      await saveRow(outRow);
+      await saveRow(withEventClears(outRow, originalRow));
       setRows((prev) => prev.map((r) => (r.id === rowId ? outRow : r)));
 
       const logEntry: AuditLog = {

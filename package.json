@@ -15,7 +15,8 @@
     "seed:codes": "node server/seed_codes.js",
     "ck:login": "node server/ckAuth.js",
     "dev:all": "concurrently \"next dev\" \"node server/index.js\"",
-    "db:export": "node server/export_database.js"
+    "db:export": "node server/export_database.js",
+    "events:backfill": "node server/backfill_planning_events.js"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",

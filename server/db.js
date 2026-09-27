@@ -15,6 +15,7 @@ const isSupabaseConfigured =
   !supabaseKey.includes("your-supabase-service-role");
 
 const rowColumns = require("./rowColumns");
+const planningEvents = require("./planningEvents");
 
 let supabase = null;
 let useSupabase = isSupabaseConfigured;
@@ -65,6 +66,7 @@ async function initDb() {
     } else {
       namedColumns = await rowColumns.isNamed(supabase);
       console.log(`[DB] rows table uses ${namedColumns ? "NAMED columns (category, style, plant, …)" : "LEGACY columns (col1 … col33)"}`);
+      await planningEvents.init(supabase);
     }
   } catch (err) {
     console.error("[DB] Failed to verify Supabase tables, falling back to in-memory:", err);
@@ -285,7 +287,7 @@ function invalidateRowsCache() {
 // after every edit re-downloaded the full table (~0.64 MB per edit). `savedDbRows` are the rows as
 // Supabase returned them from the write (`.select()`), so the cache holds exactly what's stored.
 // Bulk jobs (import via saveAllRows, restore, clear, seed) still invalidate outright.
-function patchRowsCache(savedDbRows, deletedIds) {
+function patchRowsCache(savedDbRows, deletedIds, activeEvents) {
   // An in-flight refill may have read the table BEFORE this write — never let it land.
   rowsCacheGen++;
   cacheStats.patches++;
@@ -295,7 +297,9 @@ function patchRowsCache(savedDbRows, deletedIds) {
   }
   if (!rowsCache) return;
   const updates = new Map();
-  (savedDbRows || []).forEach((dbRow) => updates.set(dbRow.id, formatDbRow(dbRow)));
+  (savedDbRows || []).forEach((dbRow) =>
+    updates.set(dbRow.id, planningEvents.overlay(formatDbRow(dbRow), activeEvents && activeEvents.get(dbRow.id))),
+  );
   const removed = new Set(deletedIds || []);
   const next = [];
   rowsCache.rows.forEach((r) => {
@@ -402,11 +406,53 @@ async function fetchAllRowsFromSupabase() {
     from += PAGE_SIZE;
   }
 
-  const rows = allData.map(formatDbRow).filter(isUsableRow);
+  let rows = allData.map(formatDbRow).filter(isUsableRow);
+  rows = await overlayPlanningEvents(rows, null);
   const ms = Date.now() - startedAt;
   cacheStats.lastRefill = { at: new Date().toISOString(), rows: rows.length, ms };
   console.log(`[DB] rows cache MISS -> refilled from Supabase: ${rows.length} rows in ${ms} ms`);
   return rows;
+}
+
+// planning_events -> rows: fills back any active event a row's JSON lost and flags a blank Plant on a
+// planned row (see server/planningEvents.js overlay). rowIds null = load every active event.
+// Fail-open: on any error the rows are served as they are.
+async function overlayPlanningEvents(rows, rowIds) {
+  if (!planningEvents.isEnabled() || !rows.length) return rows;
+  try {
+    const active = await planningEvents.loadActive(supabase, rowIds);
+    let restored = 0;
+    const out = rows.map((r) => {
+      const o = planningEvents.overlay(r, active.get(r.id));
+      if (o.__events_restored) restored++;
+      return o;
+    });
+    if (restored) console.warn(`[EVENTS] filled back lost planning events on ${restored} row(s) from planning_events`);
+    return out;
+  } catch (err) {
+    console.error("[EVENTS] overlay failed, serving rows without it:", err.message || err);
+    return rows;
+  }
+}
+
+// Stored { col11, schedule } for the given ids -> Map<id, { col11, schedule }>, used by the event
+// guard to tell a real clear from a no-op and to stamp each event with its plant.
+async function fetchStoredForGuard(ids) {
+  const out = new Map();
+  const FETCH_BATCH = 200;
+  const unique = [...new Set(ids.filter(Boolean))];
+  for (let i = 0; i < unique.length; i += FETCH_BATCH) {
+    const { data, error } = await supabase
+      .from("rows")
+      .select(rowColumns.selectList(["id", "col11", "schedule"], namedColumns))
+      .in("id", unique.slice(i, i + FETCH_BATCH));
+    if (error) throw new Error(error.message || JSON.stringify(error));
+    (data || []).forEach((d) => {
+      const r = rowColumns.fromDb(d, namedColumns);
+      out.set(r.id, { col11: r.col11, schedule: r.schedule || {} });
+    });
+  }
+  return out;
 }
 
 // Resolves to { rows, outcome } where outcome is HIT | MISS | WAIT | STALE (see cacheStats above).
@@ -502,7 +548,8 @@ module.exports = {
       all.push(...data);
       if (data.length < PAGE_SIZE) break;
     }
-    const rows = all.map(formatDbRow).filter((r) => !EXCLUDED_ROW_IDS.includes(r.id));
+    let rows = all.map(formatDbRow).filter((r) => !EXCLUDED_ROW_IDS.includes(r.id));
+    rows = await overlayPlanningEvents(rows, rows.map((r) => r.id));
     archivedRowsCache = { rows, at: Date.now() };
     return rows;
   },
@@ -533,6 +580,17 @@ module.exports = {
   // Save or update a single row
   async saveRow(row) {
     await ensureDb();
+    // Planning-event guard FIRST: it drops every "" the save isn't allowed to clear (only keys listed
+    // in `_event_clears` by a manual action may be blanked) and strips the `_event_*` control fields.
+    row = { ...row };
+    let activeEvents = null;
+    if (useSupabase && supabase) {
+      const stored = await fetchStoredForGuard([row.id]);
+      activeEvents = await planningEvents.guardRows(supabase, [row], stored, "save");
+    } else {
+      delete row._event_clears;
+      delete row._event_source;
+    }
     // Separate dynamic calendar date fields from structural specification columns
     const specFields = {};
     const scheduleDates = {};
@@ -572,7 +630,7 @@ module.exports = {
 
       const { data: saved, error } = await supabase.from("rows").upsert(dbRow).select("*");
       if (error) throw error;
-      patchRowsCache(saved);
+      patchRowsCache(saved, null, activeEvents);
     } else {
       const idx = inMemoryRows.findIndex((r) => r.id === row.id);
       if (idx > -1) {
@@ -627,18 +685,11 @@ module.exports = {
       // wipes any schedule-only field (col34+, calendar dates) the caller's in-memory row didn't
       // happen to carry a fresh value for. Fetch the current schedules for this batch up front so
       // each row can be merged before upserting.
-      const ids = rows.map((r) => r.id).filter(Boolean);
-      const existingScheduleById = new Map();
-      const FETCH_BATCH = 200;
-      for (let i = 0; i < ids.length; i += FETCH_BATCH) {
-        const idBatch = ids.slice(i, i + FETCH_BATCH);
-        const { data: existingRows, error: fetchErr } = await supabase
-          .from("rows")
-          .select("id, schedule")
-          .in("id", idBatch);
-        if (fetchErr) throw new Error(fetchErr.message || JSON.stringify(fetchErr));
-        (existingRows || []).forEach((er) => existingScheduleById.set(er.id, er.schedule || {}));
-      }
+      const stored = await fetchStoredForGuard(rows.map((r) => r.id));
+      const existingScheduleById = new Map([...stored].map(([id, st]) => [id, st.schedule]));
+      // Planning-event guard (see saveRow): refused clears are dropped from each row before the merge.
+      rows = rows.map((r) => ({ ...r }));
+      const activeEvents = await planningEvents.guardRows(supabase, rows, stored, "bulk");
 
       const dbRows = rows.map((row) => {
         const specFields = {};
@@ -698,9 +749,12 @@ module.exports = {
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
       }
-      patchRowsCache(savedRows);
+      patchRowsCache(savedRows, null, activeEvents);
     } else {
       rows.forEach((row) => {
+        row = { ...row };
+        delete row._event_clears;
+        delete row._event_source;
         const idx = inMemoryRows.findIndex((r) => r.id === row.id);
         if (idx > -1) {
           inMemoryRows[idx] = { ...row };
@@ -718,6 +772,7 @@ module.exports = {
       const { error } = await supabase.from("rows").delete().eq("id", id);
       if (error) throw error;
       patchRowsCache([], [id]);
+      await planningEvents.softDeleteRows(supabase, [id], "row-deleted");
     } else {
       inMemoryRows = inMemoryRows.filter((r) => r.id !== id);
     }
@@ -730,6 +785,7 @@ module.exports = {
       const { error } = await supabase.from("rows").delete().in("id", ids);
       if (error) throw error;
       patchRowsCache([], ids);
+      await planningEvents.softDeleteRows(supabase, ids, "row-deleted");
     } else {
       inMemoryRows = inMemoryRows.filter((r) => !ids.includes(r.id));
     }
@@ -1000,6 +1056,7 @@ module.exports = {
         .from("columns_config")
         .upsert({ id: "default", config: DEFAULT_COLUMNS });
       if (colErr) throw colErr;
+      await planningEvents.replaceAll(supabase, mockRows, "reset");
     } else {
       inMemoryRows = mockRows.map((r) => ({ ...r }));
       inMemoryLogs = [];
@@ -1013,6 +1070,7 @@ module.exports = {
     if (useSupabase && supabase) {
       const { error } = await supabase.from("rows").delete().neq("id", "0");
       if (error) throw error;
+      await planningEvents.replaceAll(supabase, [], "clear-all");
     } else {
       inMemoryRows = [];
     }
@@ -1117,6 +1175,7 @@ module.exports = {
         const { error: insErr } = await supabase.from("rows").insert(batch);
         if (insErr) throw insErr;
       }
+      await planningEvents.replaceAll(supabase, snapshotRows, "restore-backup");
     } else {
       inMemoryRows = snapshotRows.map((r) => ({ ...r }));
     }

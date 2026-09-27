@@ -283,6 +283,40 @@ export async function getAllRows(role?: string, opts?: { fresh?: boolean }): Pro
   }
 }
 
+// ── Planning-event protection (server/planningEvents.js) ─────────────────────────────────────
+// Planning events (date keys "2026-09-29" / "2026-09-29_LEEMA" and "_leg_<plant>" markers) are
+// only ever CLEARED when the save lists them in `_event_clears`. Any other "" the server receives
+// for an event that has a value — a stale full-row save, the page-load heal, an import — is refused
+// and the stored event is kept. So a MANUAL action (Delete / Clear / move / replan / plant change
+// in Edit) must run its outgoing row through withEventClears(next, before) to name exactly the
+// events it removes. The list rides on the row as a newline-joined `__eventClears` string (client
+// only — never stored, never kept in React state).
+const PLANNING_EVENT_KEY_RE = /^\d{4}-\d{2}-\d{2}(_.+)?$/;
+export const isPlanningEventKey = (k: string): boolean =>
+  PLANNING_EVENT_KEY_RE.test(k) || k.startsWith("_leg_");
+
+export function withEventClears<T extends EmbellishmentRow>(
+  next: T,
+  before: EmbellishmentRow | Record<string, unknown> | undefined | null,
+): T {
+  if (!before) return next;
+  const prev = before as Record<string, unknown>;
+  const clears = Object.keys(next).filter(
+    (k) =>
+      isPlanningEventKey(k) &&
+      String(next[k] ?? "").trim() === "" &&
+      String(prev[k] ?? "").trim() !== "",
+  );
+  if (clears.length === 0) return next;
+  return { ...next, __eventClears: clears.join("\n") };
+}
+
+// __eventClears -> the `_event_clears` array the server reads.
+const eventClearsOf = (row: EmbellishmentRow): string[] =>
+  typeof row.__eventClears === "string" && row.__eventClears
+    ? row.__eventClears.split("\n").filter(Boolean)
+    : [];
+
 export async function saveRow(row: EmbellishmentRow): Promise<void> {
   try {
     const rowToSave: Record<string, unknown> = {};
@@ -299,6 +333,8 @@ export async function saveRow(row: EmbellishmentRow): Promise<void> {
       rowToSave.col3 = cleanCategory(rowToSave.col3);
     }
     rowToSave.col47 = derivePlanStatus(rowToSave);
+    const clears = eventClearsOf(row);
+    if (clears.length) rowToSave._event_clears = clears;
     const response = await apiFetch(`/rows/${rowToSave.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -428,6 +464,8 @@ export async function saveMultipleRows(rows: EmbellishmentRow[]): Promise<void> 
         }
       });
       cleanObj.col47 = derivePlanStatus(cleanObj);
+      const clears = eventClearsOf(r);
+      if (clears.length) cleanObj._event_clears = clears;
       return cleanObj as unknown as EmbellishmentRow;
     });
     // Deduplicate by id to prevent 'ON CONFLICT DO UPDATE command cannot affect row a second time' error
