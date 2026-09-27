@@ -29,6 +29,8 @@ import {
   cleanSeason,
   cleanCategory,
   isRowSent,
+  colorApprovalByCombo,
+  comboKeyOf,
   createBackup,
   DEFAULT_COLUMNS,
   listPendingUpdates,
@@ -151,6 +153,9 @@ export default function Home() {
   // filter above and of anything Advanced Analytics reads.
   const [selectedPlanStatusFilter, setSelectedPlanStatusFilter] = useState<"All" | "Active" | "Dropped" | "Unplanned">("All");
   const [dhlFilter, setDhlFilter] = useState<"all" | "withDhl" | "noDhl">("all");
+  // Color Approval filter — combo-level, Approved combos only (same basis as the Advanced
+  // Analytics Color Approval card): with a colour sign-off vs. still missing one.
+  const [colorFilter, setColorFilter] = useState<"all" | "colorApproved" | "missingColor">("all");
   const [slaFilter, setSlaFilter] = useState<"all" | "overdue" | "dueSoon" | "priority">("all");
   const [advancedSelections, setAdvancedSelections] =
     useState<FilterSelections>({
@@ -5273,6 +5278,13 @@ export default function Home() {
       result = result.filter((row) => !isRowSent(row));
     }
 
+    // Apply Color Approval Filter — state is computed over ALL rows so a combo's colour sign-off
+    // on a row hidden by other filters still counts.
+    if (colorFilter !== "all") {
+      const byCombo = colorApprovalByCombo(rows);
+      result = result.filter((row) => byCombo.get(comboKeyOf(row)) === colorFilter);
+    }
+
     // Apply Status Filter (Bypass in Advanced Mode so the Sidebar Filters can handle status)
     if (viewMode !== "advanced") {
       if (selectedStatusFilter === "Active") {
@@ -5510,6 +5522,7 @@ export default function Home() {
     selectedPlanStatusFilter,
     selectedTriggerFilter,
     dhlFilter,
+    colorFilter,
     slaFilter,
     searchQuery,
     currentRole,
@@ -5976,6 +5989,8 @@ export default function Home() {
                     setSelectedPlanStatusFilter={setSelectedPlanStatusFilter}
                     dhlFilter={dhlFilter}
                     setDhlFilter={setDhlFilter}
+                    colorFilter={colorFilter}
+                    setColorFilter={setColorFilter}
                     selectedTeamFilter={selectedTeamFilter}
                     setSelectedTeamFilter={setSelectedTeamFilter}
                     rows={rows}

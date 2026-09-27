@@ -300,14 +300,16 @@ export default function AdvancedDashboard({
     comboMap.forEach((cRows) => {
       const statuses = cRows.map(getRowStatus);
       if (statuses.every((s) => s === "dropped") || isHoldGroup(statuses)) return; // only active combos, matching the hero metrics
-      if (cRows.some(hasColorApproval)) comboColorApproved++;
+      // Color approval is counted out of the APPROVED combos only (base = comboApproved), so
+      // "missing" = approved combos still without a colour sign-off.
+      if (getGroupStatus(cRows) === "approved" && cRows.some(hasColorApproval)) comboColorApproved++;
       if (cRows.some(hasPlacementApproval)) comboPlacementApproved++;
     });
 
     graphicMap.forEach((gRows) => {
       const statuses = gRows.map(getRowStatus);
       if (statuses.every((s) => s === "dropped") || isHoldGroup(statuses)) return;
-      if (gRows.some(hasColorApproval)) graphicColorApproved++;
+      if (getGroupStatus(gRows) === "approved" && gRows.some(hasColorApproval)) graphicColorApproved++;
       if (gRows.some(hasPlacementApproval)) graphicPlacementApproved++;
     });
 
@@ -433,8 +435,8 @@ export default function AdvancedDashboard({
         ? Math.round((comboLayoutTechApproved / activeCombos) * 100)
         : 0;
     const comboColorRate =
-      activeCombos > 0
-        ? Math.round((comboColorApproved / activeCombos) * 100)
+      comboApproved > 0
+        ? Math.round((comboColorApproved / comboApproved) * 100)
         : 0;
     const comboPlacementRate =
       activeCombos > 0
@@ -449,8 +451,8 @@ export default function AdvancedDashboard({
         ? Math.round((graphicLayoutTechApproved / activeGraphics) * 100)
         : 0;
     const graphicColorRate =
-      activeGraphics > 0
-        ? Math.round((graphicColorApproved / activeGraphics) * 100)
+      graphicApproved > 0
+        ? Math.round((graphicColorApproved / graphicApproved) * 100)
         : 0;
 
     return {
@@ -565,7 +567,10 @@ export default function AdvancedDashboard({
     comboMap.forEach((cRows) => {
       const isDropped = cRows.every((r) => getRowStatus(r) === "dropped");
       if (isDropped) return; // matches the cards' own "active combos" denominator
-      if (!cRows.some(hasColorApproval)) color.push(cRows[0]);
+      // Color gap = APPROVED combos with no colour sign-off (matches the card's approved base).
+      if (getGroupStatus(cRows) === "approved" && !cRows.some(hasColorApproval)) {
+        color.push(cRows.find((r) => getRowStatus(r) === "approved") ?? cRows[0]);
+      }
       const statuses = cRows.map(getRowStatus);
       const techLayoutApproved = statuses.some((s) => s === "approved");
       if (!techLayoutApproved) layoutTech.push(cRows[0]);
@@ -1371,7 +1376,8 @@ export default function AdvancedDashboard({
               title="Color Approval"
               hint="from Strike-Off Comments · “APPROVED FOR COLOR”"
               value={stats.combo.colorApproved}
-              total={stats.combo.total}
+              total={stats.combo.approved}
+              totalLabel="approved"
               rate={stats.combo.colorRate}
               accent="#ec4899"
               icon="🎨"
@@ -1478,7 +1484,9 @@ export default function AdvancedDashboard({
                 ? `${approvalGapLists.commentsPending.length} active combo${approvalGapLists.commentsPending.length === 1 ? "" : "s"} — strike-off gone out to NY (DHL / comment) with no verdict yet`
                 : approvalGapModal === "placementNeeded"
                   ? `${approvalGapLists.placementNeeded.length} combo${approvalGapLists.placementNeeded.length === 1 ? "" : "s"} — Tech & Layout approved, placement sign-off still pending`
-                  : undefined
+                  : approvalGapModal === "color"
+                    ? `${approvalGapLists.color.length} approved combo${approvalGapLists.color.length === 1 ? "" : "s"} still without a colour sign-off`
+                    : undefined
           }
           rows={
             approvalGapModal === "color"
@@ -1666,6 +1674,7 @@ function ApprovalSplitCard({
   onClick,
   footer,
   tooltip,
+  totalLabel = "active",
 }: {
   title: string;
   hint: string;
@@ -1680,6 +1689,7 @@ function ApprovalSplitCard({
   // opens the "cleared Tech & Layout, now needs placement sign-off" work list).
   footer?: string;
   tooltip?: string;
+  totalLabel?: string;
 }) {
   const missing = Math.max(0, total - value);
   const footerText = footer ?? `${missing} missing — click to view →`;
@@ -1716,7 +1726,7 @@ function ApprovalSplitCard({
           <div className="text-2xl font-mono font-extrabold" style={{ color: accent }}>
             {value}
           </div>
-          <div className="text-[9px] text-zinc-500 font-mono">/ {total} active</div>
+          <div className="text-[9px] text-zinc-500 font-mono">/ {total} {totalLabel}</div>
         </div>
       </div>
       <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">

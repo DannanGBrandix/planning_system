@@ -1509,3 +1509,20 @@ export const groupRowsByCombo = (rows: EmbellishmentRow[]): EmbellishmentRow[][]
   return [...m.values()];
 };
 
+// Colour-approval state per combo (same Style|Graphic|Combo|Ground key as groupRowsByCombo),
+// scoped to APPROVED combos only — matches Advanced Analytics' Color Approval card:
+//   "colorApproved"   = Approved combo with a colour sign-off on any member row
+//   "missingColor"    = Approved combo with no colour sign-off yet
+// Combos that aren't Approved get no entry. Used by the Dashboard's Color Approval filter.
+export type ComboColorState = "colorApproved" | "missingColor";
+export const comboKeyOf = (r: EmbellishmentRow): string =>
+  [r.col5, r.col7, r.col6, r.col8].map((v) => String(v || "").trim()).join("|");
+export const colorApprovalByCombo = (rows: EmbellishmentRow[]): Map<string, ComboColorState> => {
+  const out = new Map<string, ComboColorState>();
+  for (const g of groupRowsByCombo(rows)) {
+    if (getGroupStatus(g) !== "approved") continue;
+    out.set(comboKeyOf(g[0]), g.some(hasColorApproval) ? "colorApproved" : "missingColor");
+  }
+  return out;
+};
+
