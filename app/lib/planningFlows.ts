@@ -1847,6 +1847,20 @@ export function autoScheduleForwardFromEvent<T extends Record<string, unknown>>(
     );
     if (hasVerdict) continue;
 
+    // A downstream milestone the planner LOCKED ("|X", e.g. PPS dragged to a later day) stays on
+    // its pinned day and the rest of the walk cascades off that real date. Without this, marking
+    // an earlier event (FR) Pass rewrote a fresh "PPS-S" at the lead-time date next to the pinned
+    // PPS — two PPS pills, with NY pulled back in front of the pinned one.
+    const pinnedKey = Object.keys(out).find((k) => {
+      const v = out[k];
+      return /^\d{4}-\d{2}-\d{2}$/.test(k) && typeof v === "string" && v.trim() &&
+        parseEventValue(v)?.isPinned === true && codeMatchesSlot(milestoneBase(v), toBase);
+    });
+    if (pinnedKey) {
+      current = new Date(pinnedKey);
+      continue;
+    }
+
     const dateKey = toISO(current);
     if (step.fromEvent === "NY") {
       if (brand.includes("V8") || brand.includes("PINK")) { out[dateKey] = "DTC-3010"; continue; }

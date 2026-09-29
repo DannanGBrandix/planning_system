@@ -2006,6 +2006,10 @@ export default function Home() {
   // buttons, only these flags differ. ckCategoryOverride, when given, is the exact CK category
   // ("CKNA Men's" / "CKNA Women's" / "CKP" / "Other Knit") the sync already resolved from the file
   // name; otherwise a CK import derives it from the file name itself, falling back to bare "CK".
+  // A tracking-chart DHL date turns the row's planned NY green only when it's within this many
+  // calendar days of that planned NY (planned 9/28: DHL 9/25 or 9/30 -> green; DHL 9/9 -> not).
+  const DHL_NY_MATCH_MAX_DAYS = 5;
+
   const handleImportExcel = (
     e: React.ChangeEvent<HTMLInputElement>,
     isPlanningSheetImport = false,
@@ -4393,6 +4397,11 @@ export default function Home() {
                   const nearest = planned.reduce((a, b) =>
                     Math.abs(Date.parse(b.slice(0, 10)) - dhlTime) < Math.abs(Date.parse(a.slice(0, 10)) - dhlTime) ? b : a,
                   );
+                  // Only a DHL sent CLOSE to the planned NY is that NY happening. A DHL weeks away is
+                  // a different submission (e.g. DHL 9/9 for the layout strike-off vs an NY planned
+                  // 9/28 for the colour-approval round) — that planned NY must stay open, not green.
+                  const gapDays = Math.abs(Date.parse(nearest.slice(0, 10)) - dhlTime) / 86_400_000;
+                  if (gapDays > DHL_NY_MATCH_MAX_DAYS) return;
                   nyPassKeys.push(nearest); // applied after the merge below
                 });
               }
