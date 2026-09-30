@@ -25,7 +25,7 @@ function getMondayOfCurrentWeek(): string {
   const monday = new Date(d.setDate(diff));
   return toLocalDateStr(monday);
 }
-import { EmbellishmentRow, ColumnMapping, getRowStatus, getTriggerCatalog, TriggerCatalogEntry } from "../lib/db";
+import { EmbellishmentRow, ColumnMapping, getRowStatus, getTriggerCatalog, TriggerCatalogEntry, hasBuy } from "../lib/db";
 import { isCkFamilyCategory } from "../lib/ckCategories";
 import RowDetailsModal from "./RowDetailsModal";
 import EventStatusPanel from "./EventStatusPanel";
@@ -1885,7 +1885,7 @@ export default function Table({
 
                       // Custom rendering for Buy (col48) — two-state Has Buy / No Buy toggle
                       if (key === "col48") {
-                        const yes = String(value ?? "").trim().toUpperCase() === "Y";
+                        const yes = hasBuy(row as EmbellishmentRow); // blank col48 falls back to colour approval
                         return (
                           <td
                             key={key}

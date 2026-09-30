@@ -331,7 +331,8 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     sequence: ["SEWIN/SEWS", "GMT", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "GMT", toEvent: "RDPS", leadTimeDays: 1, label: "1d" },
+      // 2 working days, same as the PPSDS -> RDPS dye step in fabrics/mock-ups (changed 2026-09-30).
+      { fromEvent: "GMT", toEvent: "RDPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "RDPS", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
@@ -340,7 +341,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 35,
+    totalLeadTimeDays: 36,
   },
 
   // ------------------------------------------------------------
@@ -676,18 +677,23 @@ export function getApplicationFormCategory(row: Record<string, unknown>): Applic
 
 /**
  * The category a row is actually PLANNED as — getApplicationFormCategory plus the fabric-only
- * overrides: a CK-family item (by Category, col3), OR a row running at BABL / AV (by Plant,
- * col11/col12 — see isFabricOnlyPlant), whose Application Form / S-Off Requirement says Garments
- * or Mock-Ups is planned the FABRICS way instead, starting FS. Callers that must line up with the
+ * overrides: a row running at BABL / AV (by Plant, col11/col12 — see isFabricOnlyPlant) is
+ * ALWAYS planned the FABRICS way, starting FS, whatever its S-Off Requirement; a CK-family item
+ * (by Category, col3) whose Application Form / S-Off Requirement says Garments or Mock-Ups is too. Callers that must line up with the
  * row's real event sequence — flow detection, the Fabric Dispatch export's sheet routing — use
  * THIS, not the raw Application-Form category, otherwise e.g. a CK garment row is planned
  * FS-first but exported onto a per-plant GARMENT tab.
  */
 export function getPlanningCategory(row: Record<string, unknown>): ApplicationFormCategory {
   const category = getApplicationFormCategory(row);
+  // BABL / AV: ALWAYS the fabric flow, whatever the S-Off Requirement says — Cut Panel and Fit
+  // included, not just Garments / Mock-Ups (per the planner, 2026-09-30: a BABL leg with S-Off
+  // Req "Cut Panel" was planned CSRF -> CPS instead of sending fabric). A cross-dev leg is
+  // scheduled with col11 = that leg's plant alone, so only the BABL/AV leg is affected.
+  if (isFabricOnlyPlant(row)) return "FABRICS";
   if (
     (category === "GARMENTS" || category === "MOCK-UPS") &&
-    (isCkFamilyCategory(String(row.col3 || "")) || isFabricOnlyPlant(row))
+    isCkFamilyCategory(String(row.col3 || ""))
   ) {
     return "FABRICS";
   }

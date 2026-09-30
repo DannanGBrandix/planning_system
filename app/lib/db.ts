@@ -142,6 +142,17 @@ export function cleanSeason(season: string): string {
      return `${text}${year}`;
   }
 
+  // No season code at the START — the chart may put the line name first. Confirmed against real
+  // data: the VS CASUAL SLEEP SU27 Graphic Chart writes "Casual Sleep \r\nSU27" in SEASON on 34 of
+  // its 100 rows (the rest just say "SU27"). Left as-is that whole string became col4, failed the
+  // import's season guard against the existing "SU27" rows, and every one showed up as a
+  // duplicate "New Record". Look for a known season token anywhere in the value instead.
+  const inner = s.match(/(?:^|[^A-Z0-9])(SU|SP|FA|HO|WI|SUMMER|SPRING|FALL|HOLIDAY|WINTER)\s*'?\s*(?:20)?(\d{2})(?![0-9])/);
+  if (inner) {
+    const map: Record<string, string> = { SUMMER: "SU", SPRING: "SP", FALL: "FA", HOLIDAY: "HO", WINTER: "WI" };
+    return `${map[inner[1]] || inner[1]}${inner[2]}`;
+  }
+
   return s;
 }
 
@@ -1395,10 +1406,16 @@ export function hasPlacementApproval(r: EmbellishmentRow): boolean {
   return /APPROV|CONFIRM/.test(v);
 }
 
-// Buy status (col48) — a manual planner flag, "Y" = this graphic/combo has an order buy,
-// anything else (incl. blank) = no buy yet. Kept deliberately simple: two states only.
+// Buy status (col48) — "Y" = this graphic/combo has an order buy, "N" = no buy. An explicit
+// Y/N always wins (the planner's toggle, or a future buy-data import). BLANK falls back to the
+// colour approval: per the planner (2026-09-30), colour sign-offs so far were only taken for
+// graphics that came for the buy, so until the real buy data is loaded a colour-approved row
+// counts as Has Buy. Toggling it to "No Buy" writes an explicit "N" and overrides this.
 export function hasBuy(r: EmbellishmentRow): boolean {
-  return String(r.col48 || '').trim().toUpperCase() === 'Y';
+  const v = String(r.col48 || '').trim().toUpperCase();
+  if (v === 'Y') return true;
+  if (v === 'N') return false;
+  return hasColorApproval(r);
 }
 
 // Graphic Type (col19) values the business does NOT want inflating Advanced Analytics'

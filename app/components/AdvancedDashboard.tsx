@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { EmbellishmentRow, getRowStatus, isRowSent, getGroupStatus, groupRowsByCombo, hasColorApproval, hasPlacementApproval, hasStrikeOffSubmission } from "../lib/db";
+import { EmbellishmentRow, getRowStatus, isRowSent, getGroupStatus, groupRowsByCombo, hasColorApproval, hasPlacementApproval, hasStrikeOffSubmission, hasBuy } from "../lib/db";
 import ComboListModal from "./ComboListModal";
 import { isCkFamilyCategory } from "../lib/ckCategories";
 import {
@@ -50,7 +50,7 @@ export default function AdvancedDashboard({
   // clicking a card opens the popup listing exactly which active combos are still missing that
   // approval (previously the card only showed a bare count with no way to see which items it
   // referred to).
-  const [approvalGapModal, setApprovalGapModal] = useState<"color" | "placementNeeded" | "layoutTech" | "cp" | "commentsPending" | null>(null);
+  const [approvalGapModal, setApprovalGapModal] = useState<"color" | "colorBuy" | "colorNoBuy" | "placementNeeded" | "layoutTech" | "cp" | "commentsPending" | null>(null);
   const [editingTriggerKey, setEditingTriggerKey] = useState<string | null>(
     null,
   );
@@ -296,12 +296,23 @@ export default function AdvancedDashboard({
     let graphicColorApproved = 0;
     let comboPlacementApproved = 0;
     let graphicPlacementApproved = 0;
+    // Color Approval split by Buy status (hasBuy, any member row wins): approved combos that
+    // have a buy vs. ones that don't, and how many of each are colour-approved.
+    const comboColorByBuy = {
+      buy: { approved: 0, color: 0 },
+      noBuy: { approved: 0, color: 0 },
+    };
 
     comboMap.forEach((cRows) => {
       const statuses = cRows.map(getRowStatus);
       if (statuses.every((s) => s === "dropped") || isHoldGroup(statuses)) return; // only active combos, matching the hero metrics
       // Color approval is counted out of the APPROVED combos only (base = comboApproved), so
       // "missing" = approved combos still without a colour sign-off.
+      if (getGroupStatus(cRows) === "approved") {
+        const bucket = cRows.some(hasBuy) ? comboColorByBuy.buy : comboColorByBuy.noBuy;
+        bucket.approved++;
+        if (cRows.some(hasColorApproval)) bucket.color++;
+      }
       if (getGroupStatus(cRows) === "approved" && cRows.some(hasColorApproval)) comboColorApproved++;
       if (cRows.some(hasPlacementApproval)) comboPlacementApproved++;
     });
@@ -513,6 +524,7 @@ export default function AdvancedDashboard({
         layoutTechRate: comboLayoutTechRate,
         colorApproved: comboColorApproved,
         colorRate: comboColorRate,
+        colorByBuy: comboColorByBuy,
         placementApproved: comboPlacementApproved,
         placementRate: comboPlacementRate,
       },
@@ -550,6 +562,11 @@ export default function AdvancedDashboard({
     });
 
     const color: EmbellishmentRow[] = [];
+    // The colour-APPROVED combos behind the Color Approval card's Has Buy / No Buy boxes (same
+    // approved + hasBuy rule as stats.combo.colorByBuy). Surfaces the row carrying the colour
+    // sign-off so its comment shows in the list.
+    const colorBuy: EmbellishmentRow[] = [];
+    const colorNoBuy: EmbellishmentRow[] = [];
     // Placement's drill-down is the actionable work list: combos that have already cleared Tech &
     // Layout approval (the prerequisite step) but do NOT yet have placement sign-off — i.e. "these
     // are ready for you to chase placement approval on".
@@ -570,6 +587,10 @@ export default function AdvancedDashboard({
       // Color gap = APPROVED combos with no colour sign-off (matches the card's approved base).
       if (getGroupStatus(cRows) === "approved" && !cRows.some(hasColorApproval)) {
         color.push(cRows.find((r) => getRowStatus(r) === "approved") ?? cRows[0]);
+      }
+      if (getGroupStatus(cRows) === "approved" && cRows.some(hasColorApproval)) {
+        const shown = cRows.find(hasColorApproval) ?? cRows[0];
+        (cRows.some(hasBuy) ? colorBuy : colorNoBuy).push(shown);
       }
       const statuses = cRows.map(getRowStatus);
       const techLayoutApproved = statuses.some((s) => s === "approved");
@@ -599,12 +620,14 @@ export default function AdvancedDashboard({
       return String(a.col6 || "").localeCompare(String(b.col6 || ""));
     };
     color.sort(byGraphicThenCombo);
+    colorBuy.sort(byGraphicThenCombo);
+    colorNoBuy.sort(byGraphicThenCombo);
     placementNeeded.sort(byGraphicThenCombo);
     layoutTech.sort(byGraphicThenCombo);
     cp.sort(byGraphicThenCombo);
     commentsPending.sort(byGraphicThenCombo);
 
-    return { color, placementNeeded, layoutTech, cp, commentsPending };
+    return { color, colorBuy, colorNoBuy, placementNeeded, layoutTech, cp, commentsPending };
   }, [rows]);
 
   // Donut data — the 6 exclusive combo status buckets, so the ring is a true
@@ -1382,6 +1405,22 @@ export default function AdvancedDashboard({
               accent="#ec4899"
               icon="🎨"
               onClick={() => setApprovalGapModal("color")}
+              breakdown={[
+                {
+                  label: "Has Buy",
+                  value: stats.combo.colorByBuy.buy.color,
+                  total: stats.combo.colorByBuy.buy.approved,
+                  color: "#34d399",
+                  onClick: () => setApprovalGapModal("colorBuy"),
+                },
+                {
+                  label: "No Buy",
+                  value: stats.combo.colorByBuy.noBuy.color,
+                  total: stats.combo.colorByBuy.noBuy.approved,
+                  color: "#fb7185",
+                  onClick: () => setApprovalGapModal("colorNoBuy"),
+                },
+              ]}
             />
             <ApprovalSplitCard
               title="Placement Approval"
@@ -1469,7 +1508,11 @@ export default function AdvancedDashboard({
           title={
             approvalGapModal === "color"
               ? "Missing Color Approval"
-              : approvalGapModal === "placementNeeded"
+              : approvalGapModal === "colorBuy"
+                ? "Color Approved — Has Buy"
+                : approvalGapModal === "colorNoBuy"
+                  ? "Color Approved — No Buy"
+                  : approvalGapModal === "placementNeeded"
                 ? "Needs Placement Approval"
                 : approvalGapModal === "cp"
                   ? "C+P"
@@ -1486,12 +1529,20 @@ export default function AdvancedDashboard({
                   ? `${approvalGapLists.placementNeeded.length} combo${approvalGapLists.placementNeeded.length === 1 ? "" : "s"} — Tech & Layout approved, placement sign-off still pending`
                   : approvalGapModal === "color"
                     ? `${approvalGapLists.color.length} approved combo${approvalGapLists.color.length === 1 ? "" : "s"} still without a colour sign-off`
-                    : undefined
+                    : approvalGapModal === "colorBuy"
+                      ? `${approvalGapLists.colorBuy.length} colour-approved combo${approvalGapLists.colorBuy.length === 1 ? "" : "s"} that came for the buy`
+                      : approvalGapModal === "colorNoBuy"
+                        ? `${approvalGapLists.colorNoBuy.length} colour-approved combo${approvalGapLists.colorNoBuy.length === 1 ? "" : "s"} with no buy`
+                        : undefined
           }
           rows={
             approvalGapModal === "color"
               ? approvalGapLists.color
-              : approvalGapModal === "placementNeeded"
+              : approvalGapModal === "colorBuy"
+                ? approvalGapLists.colorBuy
+                : approvalGapModal === "colorNoBuy"
+                  ? approvalGapLists.colorNoBuy
+                  : approvalGapModal === "placementNeeded"
                 ? approvalGapLists.placementNeeded
                 : approvalGapModal === "cp"
                   ? approvalGapLists.cp
@@ -1675,6 +1726,7 @@ function ApprovalSplitCard({
   footer,
   tooltip,
   totalLabel = "active",
+  breakdown,
 }: {
   title: string;
   hint: string;
@@ -1690,6 +1742,8 @@ function ApprovalSplitCard({
   footer?: string;
   tooltip?: string;
   totalLabel?: string;
+  // Optional sub-counts shown under the bar (Color Approval: Has Buy / No Buy).
+  breakdown?: { label: string; value: number; total: number; color: string; onClick?: () => void }[];
 }) {
   const missing = Math.max(0, total - value);
   const footerText = footer ?? `${missing} missing — click to view →`;
@@ -1735,6 +1789,54 @@ function ApprovalSplitCard({
           style={{ width: `${Math.min(100, rate)}%`, backgroundColor: accent }}
         />
       </div>
+      {breakdown && breakdown.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          {breakdown.map((b) => (
+            // A div, not a <button>: the whole card is already a button (no nested buttons).
+            // stopPropagation so clicking a box opens ITS list, not the card's own list.
+            <div
+              key={b.label}
+              role={b.onClick ? "button" : undefined}
+              tabIndex={b.onClick ? 0 : undefined}
+              onClick={
+                b.onClick
+                  ? (e) => {
+                      e.stopPropagation();
+                      b.onClick!();
+                    }
+                  : undefined
+              }
+              onKeyDown={
+                b.onClick
+                  ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        b.onClick!();
+                      }
+                    }
+                  : undefined
+              }
+              className={`rounded-md border border-zinc-800 bg-black/20 px-2 py-1.5 ${
+                b.onClick ? "cursor-pointer hover:border-zinc-500" : ""
+              }`}
+              title={
+                b.onClick
+                  ? `Click to see the ${b.value} colour-approved combo${b.value === 1 ? "" : "s"} with ${b.label}`
+                  : `${b.label}: ${b.value} of ${b.total} approved combo${b.total === 1 ? "" : "s"} colour-approved`
+              }
+            >
+              <div className="text-[9px] font-bold uppercase tracking-wide" style={{ color: b.color }}>
+                {b.label}
+              </div>
+              <div className="font-mono text-sm font-extrabold text-white">
+                {b.value}
+                <span className="text-[9px] font-normal text-zinc-500"> / {b.total} approved</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex items-center justify-between mt-1">
         {onClick && (
           <span className="text-[10px] text-zinc-500">

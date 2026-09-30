@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { EmbellishmentRow, ColumnMapping } from "../lib/db";
+import { EmbellishmentRow, ColumnMapping, hasBuy } from "../lib/db";
 import { parseDhlTrackingItems, getDisplayStatus } from "./Table";
 import { PLANNING_FLOWS, detectMatchingFlow, autoScheduleEmbellishmentRow } from "../lib/planningFlows";
 import { EVENT_CODES } from "../lib/eventCodes";
@@ -398,7 +398,7 @@ export default function RowDetailsModal({ isOpen, onClose, row, columns, onUpdat
                   </select>
                 ) : key === "col48" ? (
                   <select
-                    value={String(editForm?.[key] ?? "").trim().toUpperCase() === "Y" ? "Y" : "N"}
+                    value={editForm && hasBuy(editForm as EmbellishmentRow) ? "Y" : "N"}
                     onChange={(e) => setEditForm(prev => prev ? { ...prev, [key]: e.target.value } : null)}
                     className="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-sm font-semibold rounded-lg px-3 py-2.5 text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all shadow-sm cursor-pointer"
                   >
