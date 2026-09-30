@@ -103,9 +103,12 @@ const CANONICAL_PLANTS: Record<string, string> = {
   "SCREN": "SCREEN LINE",
   "SL": "SCREEN LINE",
 
-  // Tharindu Print / Printers
+  // Tharindu Print / Printers — bare "Tharindu" is the same plant
+  "THARINDU": "THARINDU PRINT",
   "THARINDU PRINT": "THARINDU PRINT",
+  "THARINDU PRINTER": "THARINDU PRINT",
   "THARINDU PRINTERS": "THARINDU PRINT",
+  "THRINDU": "THARINDU PRINT",
   "THRINDU PRINTERS": "THARINDU PRINT",
   "THRINDU PRINT": "THARINDU PRINT",
 };
