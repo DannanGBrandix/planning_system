@@ -42,6 +42,8 @@ import {
   CkChartStatus,
   derivePlanStatus,
   isExcludedFromAdvancedAnalytics,
+  groupRowsByCombo,
+  getGroupStatus,
   getLastRowsSync,
   RowsSyncInfo,
 } from "./lib/db";
@@ -5404,7 +5406,13 @@ export default function Home() {
       } else if (selectedStatusFilter === "C+P") {
         result = result.filter((row) => getRowStatus(row) === "c+p");
       } else if (selectedStatusFilter === "Pending") {
-        result = result.filter((row) => getRowStatus(row) === "pending");
+        // The actual submission pendings — same rule as the Submission Pending card: combos
+        // (Style|Graphic|Combo|Ground) whose strike-off hasn't gone to NY yet (no DHL / strike-off
+        // comment on any live row; CK on its SP code), Branding/Trial left out. One row per combo
+        // so the table count equals the card, not one line per trigger (KNIT + LOUNGE twins).
+        result = groupRowsByCombo(result.filter((r) => !isExcludedFromAdvancedAnalytics(r)))
+          .filter((g) => getGroupStatus(g) === "pending")
+          .map((g) => g.find((r) => getRowStatus(r) === "pending") ?? g[0]);
       } else if (selectedStatusFilter === "Resubmit") {
         result = result.filter((row) => getRowStatus(row) === "resubmit");
       }

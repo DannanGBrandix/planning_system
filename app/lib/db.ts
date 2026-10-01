@@ -177,6 +177,11 @@ export function cleanCategory(cat: string): string {
   if (upper === "KNIT" || upper === "LOUNGE" || upper === "PINK KNIT" || upper === "PINK LOUNGE") {
     return "PINK";
   }
+  // PINK Sport / PINK Sleep are PINK sub-lines too — "PINK-SPORT", "PINK SPORT", "Pink Sport",
+  // "PINK-SLEEP", ... all collapse into the single "PINK" category.
+  if (/^PINK(SPORTS?|SLEEP)$/.test(lettersOnly)) {
+    return "PINK";
+  }
   // VS Sleep is stored both as "VS-SLEEP" (dominant) and "VS SLEEP" — same category,
   // collapse the space/hyphen/"CASUAL SLEEP" spellings to one bucket.
   if (/^(VS[- ]?SLEEP|CASUAL ?SLEEP)$/.test(upper)) {
