@@ -28,7 +28,7 @@ SELECT
     schedule->>'col47' AS plan_status,
     schedule->>'col48' AS buy,
     schedule->>'col49' AS second_submission_fabric,
-    schedule->>'col50' AS col50,
+    schedule->>'col50' AS fabric_dispatch_comment,
     team_owner, shared_id, version_number, is_current, change_reason, changed_date,
     schedule, created_at
 FROM rows;

@@ -120,6 +120,7 @@ const EXPORT_COLUMNS = [
   { key: "col20", label: "AOQ", hidden: true },
   { key: "col21", label: "TECHNIQUE TYPE", hidden: true },
   { key: "col22", label: "COMMENT" },
+  { key: "col50", label: "FABRIC DISPATCH COMMENT", width: 30 },
 ];
 
 // Excel's built-in "Good/Bad" cell-style colors — used to color the date column green/red
@@ -350,7 +351,7 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
       ...EXPORT_COLUMNS.map((c) => ({
         header: c.label,
         key: c.label,
-        width: 16,
+        width: "width" in c ? c.width : 16,
         hidden: "hidden" in c ? c.hidden : false,
       })),
       { header: selectedDate, key: "targetDate", width: 15 },
@@ -605,6 +606,7 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
                             <th className="px-4 py-2.5">Graphic</th>
                             <th className="px-4 py-2.5">Category</th>
                             <th className="px-4 py-2.5">Season</th>
+                            <th className="px-4 py-2.5">Dispatch Comment</th>
                             <th className="px-4 py-2.5 text-right">Status on {selectedDate}</th>
                           </tr>
                         </thead>
@@ -647,6 +649,9 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
                                 </td>
                                 <td className="px-4 py-3 text-xs text-zinc-700 dark:text-zinc-400 whitespace-nowrap">
                                   {item.col4 || "-"}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-amber-600 dark:text-amber-400 font-semibold max-w-[260px] whitespace-pre-wrap">
+                                  {String(item.col50 || "").trim() || "-"}
                                 </td>
                                 <td className="px-4 py-3 text-right">
                                   {eventLabel ? (

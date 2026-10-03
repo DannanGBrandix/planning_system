@@ -715,6 +715,10 @@ export const DEFAULT_COLUMNS: ColumnMapping = {
   // whole row, but a combo commonly goes out on Alternative for the 1st submission and Actual
   // for the 2nd (or vice versa) — col16 stays the 1st submission's answer, this is the 2nd's.
   col49: "2nd Submission Fabric",
+  // Free-text note for the Fabric Dispatch sheet — what is actually being sent this time
+  // (e.g. body fabric already went, now sending the applique fabric). Shown on the Fabric
+  // Dispatch page and in its Excel export. Routes through `schedule` JSONB like col34+.
+  col50: "Fabric Dispatch Comment",
 };
 
 // Seed Mock Data in server

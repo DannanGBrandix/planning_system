@@ -127,6 +127,9 @@ const DEFAULT_COLUMNS = {
   // Manual per-row Buy flag ("Y" / "N" / blank) — set from the combo drill-down cards
   // and the Edit Row modal. col34+ route through the `schedule` JSONB column automatically.
   col48: "Buy",
+  col49: "2nd Submission Fabric",
+  // Free-text note shown on the Fabric Dispatch page + export (what fabric is going this time).
+  col50: "Fabric Dispatch Comment",
 };
 
 // Initial Seed Data for fallback

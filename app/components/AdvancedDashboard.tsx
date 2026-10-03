@@ -1048,6 +1048,7 @@ export default function AdvancedDashboard({
         <HeroStat
           label="Total Combos"
           value={stats.combo.totalAll}
+          secondary={{ value: stats.graphic.totalAll, label: "graphics" }}
           icon="📦"
           accent="#94a3b8"
           sub={`${stats.combo.dropped} dropped · ${stats.combo.hold} hold`}
@@ -1565,12 +1566,15 @@ function HeroStat({
   sub,
   icon,
   accent,
+  secondary,
 }: {
   label: string;
   value: number;
   sub?: string;
   icon: string;
   accent: string;
+  // Optional second figure shown beside the main value (e.g. graphic count next to combos).
+  secondary?: { value: number; label: string };
 }) {
   return (
     <div
@@ -1597,6 +1601,14 @@ function HeroStat({
             style={{ color: accent }}
           >
             {value.toLocaleString()}
+            {secondary && (
+              <span className="ml-3 text-base font-bold text-zinc-300">
+                {secondary.value.toLocaleString()}
+                <span className="ml-1 text-[10px] font-sans font-bold uppercase tracking-widest text-zinc-500">
+                  {secondary.label}
+                </span>
+              </span>
+            )}
           </div>
         </div>
       </div>

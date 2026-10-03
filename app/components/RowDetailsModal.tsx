@@ -87,7 +87,9 @@ export default function RowDetailsModal({ isOpen, onClose, row, columns, onUpdat
   // pinned right after col16 ("Alternative Fabric") instead of its real, much-higher column
   // number — otherwise it'd land at the very bottom of the form, far from the 1st-submission
   // fabric field it's meant to sit beside, and the planner would never find it.
-  const colSortRank = (key: string): number => (key === "col49" ? 16.5 : parseInt(key.replace("col", "")) || 0);
+  // col50 ("Fabric Dispatch Comment") is likewise pinned right after col23 ("Dispach Deadline").
+  const colSortRank = (key: string): number =>
+    key === "col49" ? 16.5 : key === "col50" ? 23.5 : parseInt(key.replace("col", "")) || 0;
   const sortedColKeys = Object.keys(columns).sort((a, b) => colSortRank(a) - colSortRank(b));
 
   // Strike-Off status helpers
