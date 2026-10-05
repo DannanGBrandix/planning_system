@@ -78,7 +78,7 @@ import SlaWatchlistBar from "./components/SlaWatchlistBar";
 import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
 import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
-import { plantFromFlow, legPlantFlow, extractPlants } from "./lib/plantUtils";
+import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants } from "./lib/plantUtils";
 import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
 import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
@@ -152,6 +152,7 @@ export default function Home() {
     useState<string>("");
   const [selectedSeasonFilter, setSelectedSeasonFilter] = useState<string>("");
   const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string>("");
+  const [selectedPlantFilter, setSelectedPlantFilter] = useState<string>("");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<"All" | "Active" | "Dropped" | "Hold" | "Approved" | "C+P" | "Pending" | "Resubmit">("Active");
   // Plan Status (col47) filter — the planning-lifecycle flag, independent of the S/off Status
   // filter above and of anything Advanced Analytics reads.
@@ -5348,6 +5349,14 @@ export default function Home() {
       );
     }
 
+    // Apply Plant Dropdown Filter (standard dashboard only — like Category/Season above). Matches
+    // on the canonical plants in the Plant column (col11, or the Plant Flow chain when col11 is
+    // blank), so a cross-dev "ANTLER/LEEMA" row shows under both ANTLER and LEEMA, and aliases
+    // (CKT = HI EMB, AV1/AV2/BFFAV = AV …) collapse onto one entry.
+    if (selectedPlantFilter && viewMode !== "advanced") {
+      result = result.filter((row) => rowFilterPlants(row).includes(selectedPlantFilter));
+    }
+
     // Event-capsule triggers (Super Bowl, …) are hidden from EVERY default view — they're
     // planned/reported on their own, so a plain Category + Season view (standard or advanced)
     // must not fold them in on top of the regular seasonal flow. They reappear the moment their
@@ -5630,6 +5639,7 @@ export default function Home() {
     selectedStatusFilter,
     selectedPlanStatusFilter,
     selectedTriggerFilter,
+    selectedPlantFilter,
     dhlFilter,
     colorFilter,
     slaFilter,
@@ -6092,6 +6102,8 @@ export default function Home() {
                     setSelectedSeasonFilter={setSelectedSeasonFilter}
                     selectedTriggerFilter={selectedTriggerFilter}
                     setSelectedTriggerFilter={setSelectedTriggerFilter}
+                    selectedPlantFilter={selectedPlantFilter}
+                    setSelectedPlantFilter={setSelectedPlantFilter}
                     selectedStatusFilter={selectedStatusFilter}
                     setSelectedStatusFilter={setSelectedStatusFilter}
                     selectedPlanStatusFilter={selectedPlanStatusFilter}

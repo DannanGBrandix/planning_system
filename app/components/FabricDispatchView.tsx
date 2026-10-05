@@ -330,8 +330,8 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
     // (getPlanningCategory = APPLICATION FORM / S-Off Requirement, with the BABL/AV-as-fabric rule
     // applied) — the field that says what KIND of item this is, independent of which specific
     // event is scheduled on this particular date:
-    //  - GARMENTS / MOCK-UPS  -> get their own tab PER PLANT (garmentMockupItems)
-    //  - everything else (fabric, cut panels, fit functionals, ...) -> ONE combined sheet
+    //  - GARMENTS / MOCK-UPS / CUT PANELS -> get their own tab PER PLANT (garmentMockupItems)
+    //  - everything else (fabric, fit functionals, ...) -> ONE combined sheet
     //    (fabricItems), matching the reference "Event_Summary" layout.
     // Routing on the RAW Application Form put BABL/AV garment/mock-up rows on a per-plant GARMENT tab
     // even though they are planned the fabric way (FS -> FR -> ...), splitting their FS lines off
@@ -340,7 +340,7 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
     const fabricItems: DispatchItem[] = [];
     allItems.forEach((row) => {
       const category = getPlanningCategory(row);
-      if (category === "GARMENTS" || category === "MOCK-UPS") {
+      if (category === "GARMENTS" || category === "MOCK-UPS" || category === "CUT PANELS") {
         garmentMockupItems.push(row);
       } else {
         fabricItems.push(row);
@@ -399,7 +399,7 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
       dateCell.alignment = { vertical: "middle", horizontal: "center" };
     };
 
-    // --- Sheet 1: Fabric Dispatch — everything that isn't Garment/Mock-up, ALL plants
+    // --- Sheet 1: Fabric Dispatch — everything that isn't Garment/Mock-up/Cut Panel, ALL plants
     // together on one sheet, sorted by Plant then Fabric Ref. ---
     const fabricSheet = workbook.addWorksheet("Fabric Dispatch");
     setupSheet(fabricSheet);
@@ -410,7 +410,7 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
       })
       .forEach((row) => writeDataRow(fabricSheet, row));
 
-    // --- One sheet PER PLANT for Garment + Mock-up items. Excel sheet names must be
+    // --- One sheet PER PLANT for Garment + Mock-up + Cut Panel items. Excel sheet names must be
     // <=31 chars, unique, and free of : \ / ? * [ ] ---
     const usedNames = new Set<string>();
     const sanitizeSheetName = (name: string) => {
@@ -435,15 +435,23 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
       setupSheet(worksheet);
 
       const plantItems = garmentMockupItems.filter((r) => String(r.col11 || "") === plant);
-      const garmentRows = plantItems
-        .filter((r) => getPlanningCategory(r) === "GARMENTS")
-        .sort((a, b) => a.__fabric.localeCompare(b.__fabric));
-      const mockupRows = plantItems
-        .filter((r) => getPlanningCategory(r) === "MOCK-UPS")
-        .sort((a, b) => a.__fabric.localeCompare(b.__fabric));
+      const sections = (
+        [
+          ["GARMENTS", "GARMENT"],
+          ["MOCK-UPS", "MOCK-UP"],
+          ["CUT PANELS", "CUT PANEL"],
+        ] as const
+      )
+        .map(([category, label]) => ({
+          label,
+          rows: plantItems
+            .filter((r) => getPlanningCategory(r) === category)
+            .sort((a, b) => a.__fabric.localeCompare(b.__fabric)),
+        }))
+        .filter((section) => section.rows.length > 0);
 
-      // Only insert a divider when this plant tab actually has BOTH kinds on this date.
-      const needsDivider = garmentRows.length > 0 && mockupRows.length > 0;
+      // Only insert dividers when this plant tab actually has 2+ kinds on this date.
+      const needsDivider = sections.length > 1;
       const writeSectionHeader = (label: string) => {
         if (worksheet.rowCount > 1) worksheet.addRow({}); // blank spacer before the divider
         const row = worksheet.addRow({});
@@ -455,17 +463,13 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
         cell.alignment = { vertical: "middle", horizontal: "left" };
       };
 
-      if (garmentRows.length > 0) {
-        if (needsDivider) writeSectionHeader("GARMENT");
-        garmentRows.forEach((row) => writeDataRow(worksheet, row));
-      }
-      if (mockupRows.length > 0) {
-        if (needsDivider) writeSectionHeader("MOCK-UP");
-        mockupRows.forEach((row) => writeDataRow(worksheet, row));
-      }
+      sections.forEach((section) => {
+        if (needsDivider) writeSectionHeader(section.label);
+        section.rows.forEach((row) => writeDataRow(worksheet, row));
+      });
     });
 
-    // Generate Excel file — Fabric Dispatch on one combined sheet, Garment/Mock-up split
+    // Generate Excel file — Fabric Dispatch on one combined sheet, Garment/Mock-up/Cut Panel split
     // into one tab per plant.
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], {

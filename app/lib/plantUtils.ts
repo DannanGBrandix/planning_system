@@ -341,6 +341,18 @@ export function plantFromFlow(plantFlowRaw?: string | null): string {
 }
 
 /**
+ * The canonical plants a row belongs to for the dashboard's Plant filter: the plants in its Plant
+ * column (col11), or — when col11 is blank — in the plant segment recovered from Plant Flow
+ * (col12, see plantFromFlow). Aliases collapse via extractPlants, and a cross-dev
+ * "ANTLER/LEEMA" row yields both plants.
+ */
+export function rowFilterPlants(row: object): string[] {
+  const r = row as { col11?: unknown; col12?: unknown };
+  const plant = String(r.col11 || "").trim() || plantFromFlow(String(r.col12 || ""));
+  return extractPlants(plant);
+}
+
+/**
  * Slices a shared PLANT FLOW (col12) down to a single "/"-split leg's own chain, for when that leg
  * is replanned on its own (a per-plant Set Start Date, an Event Status Panel edit on one leg's
  * "<date>_<leg>" cell, or a newly-added leg from import) — e.g. "REGAL IMAGE/HI EMB/LEEMA>>BFL
