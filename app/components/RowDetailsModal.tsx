@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
-import { EmbellishmentRow, ColumnMapping } from "../lib/db";
+import { EmbellishmentRow, ColumnMapping, hasBuy } from "../lib/db";
 import { parseDhlTrackingItems, getDisplayStatus } from "./Table";
 import { PLANNING_FLOWS, detectMatchingFlow, autoScheduleEmbellishmentRow } from "../lib/planningFlows";
 import { EVENT_CODES } from "../lib/eventCodes";
+import { extractValidDate } from "../lib/triggerUtils";
 
 interface RowDetailsModalProps {
   isOpen: boolean;
@@ -82,12 +83,14 @@ export default function RowDetailsModal({ isOpen, onClose, row, columns, onUpdat
     onClose();
   };
 
-  // Sort keys logically based on the numeric part of "colX"
-  const sortedColKeys = Object.keys(columns).sort((a, b) => {
-    const numA = parseInt(a.replace("col", "")) || 0;
-    const numB = parseInt(b.replace("col", "")) || 0;
-    return numA - numB;
-  });
+  // Sort keys logically based on the numeric part of "colX". col49 ("2nd Submission Fabric") is
+  // pinned right after col16 ("Alternative Fabric") instead of its real, much-higher column
+  // number — otherwise it'd land at the very bottom of the form, far from the 1st-submission
+  // fabric field it's meant to sit beside, and the planner would never find it.
+  // col50 ("Fabric Dispatch Comment") is likewise pinned right after col23 ("Dispach Deadline").
+  const colSortRank = (key: string): number =>
+    key === "col49" ? 16.5 : key === "col50" ? 23.5 : parseInt(key.replace("col", "")) || 0;
+  const sortedColKeys = Object.keys(columns).sort((a, b) => colSortRank(a) - colSortRank(b));
 
   // Strike-Off status helpers
   const comment1 = String(editForm?.col22 || "").trim();
@@ -397,7 +400,7 @@ export default function RowDetailsModal({ isOpen, onClose, row, columns, onUpdat
                   </select>
                 ) : key === "col48" ? (
                   <select
-                    value={String(editForm?.[key] ?? "").trim().toUpperCase() === "Y" ? "Y" : "N"}
+                    value={editForm && hasBuy(editForm as EmbellishmentRow) ? "Y" : "N"}
                     onChange={(e) => setEditForm(prev => prev ? { ...prev, [key]: e.target.value } : null)}
                     className="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-sm font-semibold rounded-lg px-3 py-2.5 text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all shadow-sm cursor-pointer"
                   >
@@ -406,8 +409,18 @@ export default function RowDetailsModal({ isOpen, onClose, row, columns, onUpdat
                   </select>
                 ) : (
                   <input
-                    type={key.match(/col(14|23|36|38|39)$/) ? "date" : "text"}
-                    value={editForm?.[key] == null ? "" : String(editForm[key])}
+                    type={key.match(/col(14|20|23|36|38|39)$/) ? "date" : "text"}
+                    value={
+                      // col20 (AOQ) sometimes carries a status word instead of a date ("Approved",
+                      // "Dropped", "C+P" — see triggerUtils.extractValidDate) — a native date input
+                      // can't display that, so show it blank rather than an invalid/garbled value.
+                      // Leaving it untouched (no onChange fired) keeps that original text on save;
+                      // picking a date here overwrites it with a clean ISO date, same as the
+                      // Dashboard table's own col20 cell editor already does.
+                      key === "col20"
+                        ? extractValidDate(editForm?.[key]) || ""
+                        : editForm?.[key] == null ? "" : String(editForm[key])
+                    }
                     onChange={(e) => setEditForm(prev => prev ? { ...prev, [key]: e.target.value } : null)}
                     className="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-sm font-semibold rounded-lg px-3 py-2.5 text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all shadow-sm"
                     placeholder={`Enter ${columns[key]}`}

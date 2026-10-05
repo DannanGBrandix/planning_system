@@ -109,7 +109,12 @@ function ckStatusRank(v) {
   return 0;
 }
 
+// Databases created from server/supabase_named.sql store col1..col33 under readable names
+// (category, style, …); rowColumns translates so everything below keeps using col3, col7, …
+const rowColumns = require("./rowColumns");
+
 async function fetchAllCkRows(sb) {
+  const named = await rowColumns.isNamed(sb);
   let all = [];
   for (let off = 0; ; off += 1000) {
     const { data, error } = await sb
@@ -119,7 +124,7 @@ async function fetchAllCkRows(sb) {
       .range(off, off + 999);
     if (error) throw error;
     if (!data.length) break;
-    all = all.concat(data);
+    all = all.concat(data.map((r) => rowColumns.fromDb(r, named)));
     if (data.length < 1000) break;
   }
   return all.filter((r) => isCkFamily(r.col3));
@@ -287,6 +292,7 @@ async function applyDedupe(sb, plan) {
   }
 
   const REAL = new Set(Array.from({ length: 33 }, (_, i) => `col${i + 1}`));
+  const named = await rowColumns.isNamed(sb);
   for (const { id, patch } of toUpdate) {
     const colPatch = {};
     const schedPatch = {};
@@ -299,7 +305,7 @@ async function applyDedupe(sb, plan) {
       colPatch.schedule = { ...(cur?.schedule || {}), ...schedPatch };
     }
     colPatch.change_reason = "CK dedupe: merged fields from removed duplicate row(s)";
-    const { error } = await sb.from("rows").update(colPatch).eq("id", id);
+    const { error } = await sb.from("rows").update(rowColumns.toDb(colPatch, named)).eq("id", id);
     if (error) throw new Error(`update ${id} failed: ${error.message}`);
   }
 

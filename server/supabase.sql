@@ -178,3 +178,10 @@ DROP POLICY IF EXISTS "Enable full access for all users" ON pending_updates;
 CREATE POLICY "Enable full access for all users" ON reason_codes FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Enable full access for all users" ON event_codes FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Enable full access for all users" ON pending_updates FOR ALL USING (true) WITH CHECK (true);
+
+-- ============================================================
+-- 7. Season AOQ dates (per Category + Season fallback deadline) and Plant Aliases
+--    (user-managed plant merge/hide). Both are singleton JSON blobs stored as extra rows
+--    (id "season_aoq" / id "plant_aliases") in columns_config above, rather than their own
+--    tables — no schema change needed to add either one.
+-- ============================================================

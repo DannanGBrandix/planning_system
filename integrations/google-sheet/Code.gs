@@ -199,15 +199,41 @@ function rest_(cfg, pathAndQuery, opts) {
   return text ? JSON.parse(text) : null;
 }
 
+// The columns this script reads, under the names the rest of the script uses (col3, col5, …) and
+// under the readable names a database created from server/supabase_named.sql stores them as.
+var ROW_COLS_ = ['col3', 'col4', 'col5', 'col6', 'col7', 'col8', 'col9', 'col10', 'col11', 'col12', 'col22'];
+var NAMED_ROW_COLS_ = {
+  col3: 'category', col4: 'season', col5: 'style', col6: 'graphic_combo', col7: 'graphic',
+  col8: 'ground', col9: 'techniques', col10: 'process', col11: 'plant', col12: 'plant_flow',
+  col22: 'comments',
+};
+
+// Tries the readable column names first; if the database still has the old col3/col5/… columns
+// Supabase answers 400 and we fall back. Either way the rows come back keyed col3, col5, …
 function fetchAllRows_(cfg) {
+  try {
+    return fetchRowsWith_(cfg, true);
+  } catch (e) {
+    if (String(e).indexOf('Supabase 400') === -1) throw e;
+    return fetchRowsWith_(cfg, false);
+  }
+}
+
+function fetchRowsWith_(cfg, named) {
   var out = [];
   var pageSize = 1000;
   var offset = 0;
-  var select = 'id,col3,col4,col5,col6,col7,col8,col9,col10,col11,col12,col22,schedule';
+  var cols = ROW_COLS_.map(function (c) { return named ? NAMED_ROW_COLS_[c] : c; });
+  var select = ['id'].concat(cols, ['schedule']).join(',');
   while (true) {
     var page = rest_(cfg, 'rows?select=' + select +
       '&is_current=eq.true&limit=' + pageSize + '&offset=' + offset);
     if (!page || !page.length) break;
+    if (named) {
+      page.forEach(function (r) {
+        ROW_COLS_.forEach(function (c) { r[c] = r[NAMED_ROW_COLS_[c]]; delete r[NAMED_ROW_COLS_[c]]; });
+      });
+    }
     out = out.concat(page);
     if (page.length < pageSize) break;
     offset += pageSize;
@@ -277,8 +303,9 @@ var CANONICAL_PLANTS = {
   'INNER HOOD-REGAL': 'REGAL IMAGE', 'INNER HOOD REGAL': 'REGAL IMAGE',
   'RC': 'RICH COLOR', 'RICH COLOR': 'RICH COLOR',
   'SCREEN LINE': 'SCREEN LINE', 'SCREENLINE': 'SCREEN LINE',
-  'THARINDU PRINT': 'THARINDU PRINT', 'THARINDU PRINTERS': 'THARINDU PRINT',
-  'THRINDU PRINTERS': 'THARINDU PRINT', 'THRINDU PRINT': 'THARINDU PRINT',
+  'THARINDU': 'THARINDU PRINT', 'THARINDU PRINT': 'THARINDU PRINT',
+  'THARINDU PRINTER': 'THARINDU PRINT', 'THARINDU PRINTERS': 'THARINDU PRINT',
+  'THRINDU': 'THARINDU PRINT', 'THRINDU PRINTERS': 'THARINDU PRINT', 'THRINDU PRINT': 'THARINDU PRINT',
 };
 
 function normalizeSinglePlant_(rawName) {

@@ -94,6 +94,56 @@ export default function HistoryModal({ sharedId, onClose, allRows, columns }: Hi
                         </span>
                       </div>
                       
+                      {/* What this version WAS — its development fields and its own planning events. */}
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {[
+                          ["App Form", row.col15],
+                          ["S-Off Req", row.col27],
+                          ["Fabric Ref", row.col13],
+                          ["Plant", row.col11],
+                          ["Plant Flow", row.col12],
+                        ].map(([label, val]) => (
+                          <span
+                            key={String(label)}
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-300"
+                          >
+                            <span className="font-bold text-zinc-400">{label}:</span> {String(val || "-")}
+                          </span>
+                        ))}
+                      </div>
+                      {(() => {
+                        const events = Object.keys(row)
+                          .filter((k) => /^\d{4}-\d{2}-\d{2}(_.+)?$/.test(k) && String(row[k] ?? "").trim())
+                          .sort()
+                          .map((k) => {
+                            const [date, leg] = k.split("_");
+                            const val = String(row[k]);
+                            const status = /\|P/.test(val) ? "pass" : /\|F/.test(val) ? "fail" : "planned";
+                            return { k, date, leg, val: val.split("|")[0].replace(/-S$/i, ""), status };
+                          });
+                        if (!events.length) return null;
+                        return (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {events.map((e) => (
+                              <span
+                                key={e.k}
+                                title={`${e.date}${e.leg ? ` (${e.leg})` : ""}: ${e.val} — ${e.status}`}
+                                className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                                  e.status === "pass"
+                                    ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400"
+                                    : e.status === "fail"
+                                      ? "bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400"
+                                      : "bg-zinc-100 dark:bg-zinc-900 text-zinc-500 dark:text-zinc-400"
+                                }`}
+                              >
+                                {new Date(e.date).toLocaleDateString("en-US", { day: "numeric", month: "short" })} {e.val}
+                                {e.leg ? ` · ${e.leg}` : ""}
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      })()}
+
                       {row.change_reason && (
                         <p className="text-sm text-zinc-700 dark:text-zinc-300 italic">
                           "{row.change_reason}"

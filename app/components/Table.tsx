@@ -25,12 +25,13 @@ function getMondayOfCurrentWeek(): string {
   const monday = new Date(d.setDate(diff));
   return toLocalDateStr(monday);
 }
-import { EmbellishmentRow, ColumnMapping, getRowStatus } from "../lib/db";
+import { EmbellishmentRow, ColumnMapping, getRowStatus, getTriggerCatalog, TriggerCatalogEntry, hasBuy } from "../lib/db";
 import { isCkFamilyCategory } from "../lib/ckCategories";
 import RowDetailsModal from "./RowDetailsModal";
 import EventStatusPanel from "./EventStatusPanel";
 import HistoryModal from "./HistoryModal";
 import { parseEventValue } from "../lib/eventCodes";
+import { findTriggerCatalogAoq } from "../lib/nycVerdict";
 import { calculateTargetSendDate, parseCrossDevGroups, legPlantFlow } from "../lib/plantUtils";
 import { isSriLankaHoliday, getSriLankaHolidayName } from "../lib/sriLankaHolidays";
 import DailyEventsExport from "./DailyEventsExport";
@@ -226,12 +227,16 @@ function getEventCellStyle(rawValue: string) {
 interface TableProps {
   rows: EmbellishmentRow[];
   allRows?: EmbellishmentRow[];
+  // Current + archived versions — ONLY for the Revision History modal (exports must never see
+  // archived versions' events).
+  historyRows?: EmbellishmentRow[];
   columns: ColumnMapping;
   onUpdateRow: (row: EmbellishmentRow) => void;
   onDeleteRow: (id: string) => void;
   onDeleteMultipleRows: (ids: string[]) => void;
   onDuplicateRow: (row: EmbellishmentRow) => void;
   onForceReplan?: (rowId: string) => void;
+  onNewVersion?: (row: EmbellishmentRow) => void;
   onClearRowPlan?: (rowId: string, legPlant?: string) => void | Promise<boolean | void>;
   onSetPlanStartDate?: (rowId: string, startDateKey: string, legPlant?: string) => void;
   onApplyPlanFlow?: (rowId: string, dateKey: string, flowId: number) => void | Promise<void>;
@@ -245,12 +250,14 @@ interface TableProps {
 export default function Table({
   rows,
   allRows,
+  historyRows,
   columns,
   onUpdateRow,
   onDeleteRow,
   onDeleteMultipleRows,
   onDuplicateRow,
   onForceReplan,
+  onNewVersion,
   onClearRowPlan,
   onSetPlanStartDate,
   onApplyPlanFlow,
@@ -260,6 +267,14 @@ export default function Table({
   setSelectedGraphicFilter,
   currentRole,
 }: TableProps) {
+  // Trigger catalog (planner-defined Triggers with their own AOQ date + Category/Season) —
+  // powers the col2 "Trigger" cell's autocomplete below and, on pick, auto-fills col20 (AOQ)
+  // with that trigger's date. Defined on the Season AOQ Dates page (TriggerManagementView).
+  const [triggerCatalog, setTriggerCatalog] = useState<TriggerCatalogEntry[]>([]);
+  useEffect(() => {
+    getTriggerCatalog().then(setTriggerCatalog);
+  }, []);
+
   // Selection
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   
@@ -336,6 +351,7 @@ export default function Table({
     "col16", // Alternative Fabric
     "col18", // Technique Category
     "col27", // S-Off Requirement
+    "col49", // 2nd Submission Fabric
   ]), []);
 
   // Enforce role-based cell editing rules
@@ -613,6 +629,19 @@ export default function Table({
     const row = rows.find((r) => r.id === rowId);
     if (row && row[colKey] !== editValue) {
       let updatedRow: EmbellishmentRow = { ...row, [colKey]: editValue };
+      // Picking (or typing an exact match for) a known Trigger auto-fills its AOQ date onto
+      // col20 — but only when col20 is still blank, so this never overwrites an AOQ date/verdict
+      // someone already set by hand. Matched by name + Category + Season (findTriggerCatalogAoq,
+      // shared with the AOQ scoring engine) — the SAME Trigger name recurs every season with a
+      // different deadline ("KNIT" in SU27 isn't "KNIT" in SP27), so name alone was wrong here:
+      // it silently grabbed whichever same-named catalog entry happened to come first, regardless
+      // of this row's own season.
+      if (colKey === "col2" && !String(row.col20 || "").trim()) {
+        const aoqIso = findTriggerCatalogAoq(updatedRow as unknown as Record<string, unknown>, triggerCatalog);
+        if (aoqIso) {
+          updatedRow.col20 = aoqIso;
+        }
+      }
       if (colKey.match(/^\d{4}-\d{2}-\d{2}$/)) {
         const parsedNew = parseEventValue(editValue);
         // Same rule as the Event Status Panel: a "Planned" value typed onto a date pins that
@@ -681,6 +710,22 @@ export default function Table({
       onDeleteMultipleRows(selectedIds);
       setSelectedIds([]);
     }
+  };
+
+  // AWR (col26 — see db.ts COLUMN_LABELS, ActionCenterView's KEY_DATE_COLS, and the Excel
+  // import's "AWR"/"AWR DATE" aliases) is a manual field: the planner picks a date and applies
+  // it to every selected graphic at once. It must never be derived from the AWB/DHL tracking
+  // text — that string only tells us when the strike-off was SENT to NY, not when the
+  // artwork/graphic itself was received.
+  const [bulkAwrDate, setBulkAwrDate] = useState<string>("");
+  const handleBulkSetAwrDate = () => {
+    if (!bulkAwrDate) return;
+    rows.forEach((r) => {
+      if (!selectedIds.includes(r.id)) return;
+      onUpdateRow({ ...r, col26: bulkAwrDate });
+    });
+    setSelectedIds([]);
+    setBulkAwrDate("");
   };
 
   // Helper to determine the input field type for inline editing
@@ -833,6 +878,25 @@ export default function Table({
       );
     }
 
+    // col2 is Trigger — suggest from the planner-defined trigger catalog (Season AOQ Dates page)
+    // as the user types; picking (or typing an exact match for) one auto-fills col20 above.
+    if (colKey === "col2") {
+      return (
+        <input
+          ref={inputRef as React.RefObject<HTMLInputElement>}
+          type="text"
+          list="trigger-catalog-datalist"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onBlur={saveCell}
+          onKeyDown={handleKeyDown}
+          autoComplete="off"
+          data-lpignore="true"
+          className="w-full h-full px-2 py-1 text-xs bg-transparent border border-blue-500 focus:outline-none rounded text-zinc-900 dark:text-zinc-100"
+        />
+      );
+    }
+
     return (
       <input
         ref={inputRef as React.RefObject<HTMLInputElement>}
@@ -951,7 +1015,12 @@ export default function Table({
 
   return (
     <div className="flex flex-col gap-4 text-slate-100">
-      
+      <datalist id="trigger-catalog-datalist">
+        {triggerCatalog.map((t) => (
+          <option key={t.id} value={t.name} />
+        ))}
+      </datalist>
+
       {/* Table Toolbar */}
       <div className="sticky left-0 w-[calc(100vw-64px)] flex flex-col sm:flex-row items-center justify-between gap-4 p-4 border border-slate-800 rounded-2xl shadow-xl bg-[#141c2e] text-slate-200 z-20">
         <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -1004,6 +1073,23 @@ export default function Table({
                 </svg>
                 Delete Selected ({selectedIds.length})
               </button>
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg border border-sky-500/30 bg-sky-500/10">
+                <input
+                  type="date"
+                  value={bulkAwrDate}
+                  onChange={(e) => setBulkAwrDate(e.target.value)}
+                  className="bg-transparent text-xs text-sky-200 outline-hidden [color-scheme:dark]"
+                  title="Artwork (AWR) Received Date to apply"
+                />
+                <button
+                  onClick={handleBulkSetAwrDate}
+                  disabled={!bulkAwrDate}
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-sky-300 bg-sky-500/20 hover:bg-sky-500/30 disabled:opacity-40 disabled:cursor-not-allowed rounded-md transition-all"
+                  title="Set the Artwork (AWR) Received Date on every selected graphic"
+                >
+                  Set AWR Date ({selectedIds.length})
+                </button>
+              </div>
             </div>
           )}
           
@@ -1387,6 +1473,18 @@ export default function Table({
                             : getStatusBadge(getDisplayStatus(row))
                         }`} title={isDraft ? "Draft" : (isCellEditable("col1", currentRole, isDraft) ? "Double click to edit" : "Read-only")}>
                           {isDraft ? "Draft" : getDisplayStatus(row)}
+                        </span>
+                      )}
+                      {/* The Plant column is blank in the database but the row has planning events —
+                          something broke (every graphic has a plant). The server shows the plant the
+                          events were planned for (server/planningEvents.js overlay); flag it so it
+                          gets fixed. Editing the row saves that plant back. */}
+                      {String(row.__plant_missing ?? "") === "1" && (
+                        <span
+                          className="mt-1 px-2 py-0.5 rounded-full text-[10px] font-bold inline-block bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                          title={`Plant column is blank in the database. Showing the plant the planning events were made for${row.col11 ? ` (${row.col11})` : ""} — edit the row to confirm the plant.`}
+                        >
+                          ⚠ Plant missing
                         </span>
                       )}
                     </td>
@@ -1787,7 +1885,7 @@ export default function Table({
 
                       // Custom rendering for Buy (col48) — two-state Has Buy / No Buy toggle
                       if (key === "col48") {
-                        const yes = String(value ?? "").trim().toUpperCase() === "Y";
+                        const yes = hasBuy(row as EmbellishmentRow); // blank col48 falls back to colour approval
                         return (
                           <td
                             key={key}
@@ -2088,6 +2186,17 @@ export default function Table({
                             </svg>
                           </button>
                         )}
+                        {onNewVersion && (
+                          <button
+                            onClick={() => onNewVersion(row)}
+                            className="p-1 text-slate-400 hover:text-violet-400 hover:bg-violet-950/40 rounded-md transition-colors"
+                            title="New Version — re-develop with a different Application Form / Fabric / Plant. Keeps this version's plan & plant history; starts a fresh plan."
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M7 7h10M7 12h6m-6 5h4M17 14v6m-3-3h6M5 3h14a2 2 0 012 2v6M3 5v14a2 2 0 002 2h6" />
+                            </svg>
+                          </button>
+                        )}
                         {onClearRowPlan && onSetPlanStartDate && (
                           <button
                             onClick={async () => {
@@ -2370,25 +2479,14 @@ export default function Table({
           const row = rows.find(r => r.id === rowId);
           if (!row) return;
           const parsedNew = parseEventValue(newValue);
+          const isClear = !newValue || !newValue.trim();
 
-          // "Clear Event" — delete this milestone AND wipe the whole downstream plan (every planned
-          // "-S" pill after it), leaving a clean slate from here on. Everything before it, and any
-          // real Pass/Fail verdict, is kept. Do NOT run the normal auto-scheduler — it rebuilds the
-          // flow from the earliest date and immediately regenerates the milestone that was just
-          // cleared, which made "Clear Event" a no-op. Downstream rebuilds when the planner drops
-          // the milestone on its new date (autoScheduleForwardFromEvent).
-          if (!newValue || !newValue.trim()) {
-            const cleared = clearEventForward({ ...row }, dateKey) as EmbellishmentRow;
-            cleared.change_reason = "Event cleared via Event Status Panel";
-            await onUpdateRow(cleared);
-            return;
-          }
-
-          // A "<date>_<PLANT>" key means the planner edited ONE cross-dev leg. That leg's schedule
-          // must reschedule on its own — the shared/bare plan and every other leg stay put. The old
-          // code fell through to autoScheduleEmbellishmentRow(row), which only ever touches bare
-          // date keys, so failing (e.g.) BABL's FR silently regenerated the first leg's (HI EMB's)
-          // plan instead and never rescheduled BABL at all.
+          // A "<date>_<PLANT>" key means the planner edited (or is clearing) ONE cross-dev leg.
+          // That leg's schedule must reschedule/clear on its own — the shared/bare plan and every
+          // other leg stay put. This must run BEFORE the bare-key "Clear Event" branch below:
+          // clearEventForward only ever wipes bare (unsuffixed) date keys, so calling it directly
+          // on a "<date>_<PLANT>" key cleared the one cell but left every downstream event on that
+          // same leg untouched (they live under "<other-date>_<PLANT>" keys it never looks at).
           const legMatch = dateKey.match(/^(\d{4}-\d{2}-\d{2})_(.+)$/);
           if (legMatch) {
             const legDate = legMatch[1];
@@ -2423,17 +2521,28 @@ export default function Table({
                 legBare[k] = `${base}-S`;
               });
             }
-            legBare[legDate] = newValue;
-
-            const scheduled = (parsedNew && parsedNew.status === "planned")
-              ? autoScheduleForwardFromEvent(legBare, parsedNew.code, legDate)
-              : autoScheduleEmbellishmentRow(legBare);
+            // "Clear Event" on one leg: wipe that leg's downstream plan (every planned "-S" pill
+            // after it, on THIS leg only) the same way the shared-plan clear below does, just
+            // scoped to legBare's own bare-date view so the other leg(s) never get touched.
+            let scheduled: Record<string, unknown>;
+            if (isClear) {
+              scheduled = clearEventForward(legBare, legDate);
+            } else {
+              legBare[legDate] = newValue;
+              // "planned" AND "pass" both anchor on the picked date and reschedule only what's
+              // downstream — see the shared-plan branch below for why "pass" must NOT fall through
+              // to the full rebuild (it silently un-pins a moved-then-passed milestone and
+              // duplicates it). "fail" still takes the full rebuild for its auto-retry scheduling.
+              scheduled = (parsedNew && (parsedNew.status === "planned" || parsedNew.status === "pass"))
+                ? autoScheduleForwardFromEvent(legBare, parsedNew.code, legDate)
+                : autoScheduleEmbellishmentRow(legBare);
+            }
 
             // Write the fresh dates back onto this leg's "<date>_<PLANT>" keys only; mark it diverged.
             const outRow: EmbellishmentRow = {
               ...row,
               [`_leg_${legPlant}`]: "1",
-              change_reason: "Updated via Event Status Panel",
+              change_reason: isClear ? "Event cleared via Event Status Panel" : "Updated via Event Status Panel",
             } as EmbellishmentRow;
             Object.keys(outRow).forEach(k => {
               if (legRe.test(k)) (outRow as Record<string, unknown>)[k] = "";
@@ -2447,15 +2556,39 @@ export default function Table({
             return;
           }
 
+          // "Clear Event" on the shared/bare plan — delete this milestone AND wipe the whole
+          // downstream plan (every planned "-S" pill after it), leaving a clean slate from here on.
+          // Everything before it, and any real Pass/Fail verdict, is kept. Do NOT run the normal
+          // auto-scheduler — it rebuilds the flow from the earliest date and immediately
+          // regenerates the milestone that was just cleared, which made "Clear Event" a no-op.
+          // Downstream rebuilds when the planner drops the milestone on its new date
+          // (autoScheduleForwardFromEvent).
+          if (isClear) {
+            const cleared = clearEventForward({ ...row }, dateKey) as EmbellishmentRow;
+            cleared.change_reason = "Event cleared via Event Status Panel";
+            await onUpdateRow(cleared);
+            return;
+          }
+
           const rawRow: Record<string, unknown> = { ...row, [dateKey]: newValue };
           const plainDate = dateKey.match(/^(\d{4}-\d{2}-\d{2})$/)?.[1];
           // A planner setting a "Planned" event on a specific day means "put this milestone HERE
           // and re-plan forward from it". autoScheduleForwardFromEvent pins the picked event on the
           // picked date, leaves every earlier milestone exactly as recorded (FS/FR that already
           // happened don't move), and cascades only the events AFTER it. For the first milestone in
-          // the flow it falls back to the whole-flow rebuild. Pass/Fail already stay pinned to
-          // their exact date, so they take the normal path.
-          const scheduledRow = (parsedNew && parsedNew.status === "planned" && plainDate)
+          // the flow it falls back to the whole-flow rebuild.
+          //
+          // A "pass" verdict takes the SAME anchored path, not the full rebuild — a Pass/Fail value
+          // is never marked "|X" locked (encodeEventValue only locks a "planned" value), so once a
+          // manually-moved milestone (e.g. PPS dropped on a later date, "|X") gets marked done, the
+          // lock disappears and the full rebuild has nothing anchoring it to that real date any
+          // more. It then recomputes the WHOLE flow by pure lead-time math from scratch, and every
+          // milestone that doesn't land back on its exact original formula date — which a
+          // deliberately moved one never will — gets a brand-new duplicate pill written next to the
+          // real one (confirmed: move PPS out, mark it done -> phantom FS/FR/PPS pills reappear
+          // ahead of the real PPS date). "fail" still takes the full rebuild: it needs
+          // calculateAutoSchedule's failedEventsMap to auto-schedule the next-working-day retry.
+          const scheduledRow = (parsedNew && (parsedNew.status === "planned" || parsedNew.status === "pass") && plainDate)
             ? autoScheduleForwardFromEvent(rawRow, parsedNew.code, plainDate)
             : autoScheduleEmbellishmentRow(rawRow);
           scheduledRow.change_reason = "Updated via Event Status Panel";
@@ -2467,7 +2600,7 @@ export default function Table({
         <HistoryModal
           sharedId={historySharedId}
           onClose={() => setHistorySharedId(null)}
-          allRows={allRows || rows} // rows containing both current and historic versions
+          allRows={historyRows || allRows || rows} // rows containing both current and historic versions
           columns={columns}
         />
       )}

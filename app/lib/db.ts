@@ -142,6 +142,17 @@ export function cleanSeason(season: string): string {
      return `${text}${year}`;
   }
 
+  // No season code at the START — the chart may put the line name first. Confirmed against real
+  // data: the VS CASUAL SLEEP SU27 Graphic Chart writes "Casual Sleep \r\nSU27" in SEASON on 34 of
+  // its 100 rows (the rest just say "SU27"). Left as-is that whole string became col4, failed the
+  // import's season guard against the existing "SU27" rows, and every one showed up as a
+  // duplicate "New Record". Look for a known season token anywhere in the value instead.
+  const inner = s.match(/(?:^|[^A-Z0-9])(SU|SP|FA|HO|WI|SUMMER|SPRING|FALL|HOLIDAY|WINTER)\s*'?\s*(?:20)?(\d{2})(?![0-9])/);
+  if (inner) {
+    const map: Record<string, string> = { SUMMER: "SU", SPRING: "SP", FALL: "FA", HOLIDAY: "HO", WINTER: "WI" };
+    return `${map[inner[1]] || inner[1]}${inner[2]}`;
+  }
+
   return s;
 }
 
@@ -164,6 +175,11 @@ export function cleanCategory(cat: string): string {
   // "LOUNGE"), it only affects how rows group in the Category filter dropdown and
   // how selecting "PINK" matches rows.
   if (upper === "KNIT" || upper === "LOUNGE" || upper === "PINK KNIT" || upper === "PINK LOUNGE") {
+    return "PINK";
+  }
+  // PINK Sport / PINK Sleep are PINK sub-lines too — "PINK-SPORT", "PINK SPORT", "Pink Sport",
+  // "PINK-SLEEP", ... all collapse into the single "PINK" category.
+  if (/^PINK(SPORTS?|SLEEP)$/.test(lettersOnly)) {
     return "PINK";
   }
   // VS Sleep is stored both as "VS-SLEEP" (dominant) and "VS SLEEP" — same category,
@@ -209,14 +225,56 @@ export function derivePlanStatus(row: Record<string, unknown>): string {
   return "";
 }
 
-// Fetch all rows from backend, filtered by role for team isolation
-export async function getAllRows(role?: string): Promise<EmbellishmentRow[]> {
+// How the most recent getAllRows() call was served, so the UI can show it (see Header.tsx).
+//   cache: "HIT" (server memory) | "MISS" (server re-read the database) | "WAIT" (shared a re-read
+//   already running) | "STALE" (database unreachable — server sent its last saved copy) |
+//   "ERROR" (the request failed; the caller keeps showing what it already had)
+export interface RowsSyncInfo {
+  ok: boolean;
+  cache: string;
+  at: number; // when this fetch finished (ms since epoch)
+  lastGoodAt: number | null; // last time a fetch succeeded (for "showing data from …")
+  error?: string;
+}
+
+let lastRowsSync: RowsSyncInfo | null = null;
+export function getLastRowsSync(): RowsSyncInfo | null {
+  return lastRowsSync;
+}
+
+// Fetch all rows from backend, filtered by role for team isolation.
+// `fresh: true` (the "Refresh now" button) tells the server to bypass its cache and re-read the
+// database; the server throttles this to once per 5 s.
+// Archived (older) versions of rows — is_current = false. Never part of getAllRows (so dashboards,
+// imports and matching only ever see current versions); used by the Revision History modal and by
+// Plant Performance, where an older version's completed work still counts for its plant.
+export async function getArchivedRows(): Promise<EmbellishmentRow[]> {
+  try {
+    const response = await apiFetch(`/rows-archived`);
+    if (!response.ok) throw new Error(`Failed to fetch archived rows (HTTP ${response.status})`);
+    const rows: EmbellishmentRow[] = await response.json();
+    return rows.map((r) => {
+      if (typeof r.col4 === "string") r.col4 = cleanSeason(r.col4);
+      if (typeof r.col3 === "string") r.col3 = cleanCategory(r.col3);
+      return { ...r, is_current: false };
+    });
+  } catch (err) {
+    console.warn("getArchivedRows failed:", err);
+    return [];
+  }
+}
+
+export async function getAllRows(role?: string, opts?: { fresh?: boolean }): Promise<EmbellishmentRow[]> {
   try {
     // Build query string: teams get filtered results, privileged roles get all rows
-    const teamParam = role ? `?team=${encodeURIComponent(role)}` : "";
-    const response = await apiFetch(`/rows${teamParam}`);
-    if (!response.ok) throw new Error("Failed to fetch rows");
-    
+    const params: string[] = [];
+    if (role) params.push(`team=${encodeURIComponent(role)}`);
+    if (opts?.fresh) params.push("fresh=1");
+    const response = await apiFetch(`/rows${params.length ? `?${params.join("&")}` : ""}`);
+    if (!response.ok) throw new Error(`Failed to fetch rows (HTTP ${response.status})`);
+
+    const now = Date.now();
+    lastRowsSync = { ok: true, cache: response.headers.get("X-Rows-Cache") || "?", at: now, lastGoodAt: now };
     const rows: EmbellishmentRow[] = await response.json();
     return rows.map(r => {
       if (typeof r.col4 === 'string') {
@@ -230,9 +288,50 @@ export async function getAllRows(role?: string): Promise<EmbellishmentRow[]> {
     });
   } catch (err) {
     console.warn("getAllRows failed:", err);
+    lastRowsSync = {
+      ok: false,
+      cache: "ERROR",
+      at: Date.now(),
+      lastGoodAt: lastRowsSync?.lastGoodAt ?? null,
+      error: err instanceof Error ? err.message : String(err),
+    };
     return [];
   }
 }
+
+// ── Planning-event protection (server/planningEvents.js) ─────────────────────────────────────
+// Planning events (date keys "2026-09-29" / "2026-09-29_LEEMA" and "_leg_<plant>" markers) are
+// only ever CLEARED when the save lists them in `_event_clears`. Any other "" the server receives
+// for an event that has a value — a stale full-row save, the page-load heal, an import — is refused
+// and the stored event is kept. So a MANUAL action (Delete / Clear / move / replan / plant change
+// in Edit) must run its outgoing row through withEventClears(next, before) to name exactly the
+// events it removes. The list rides on the row as a newline-joined `__eventClears` string (client
+// only — never stored, never kept in React state).
+const PLANNING_EVENT_KEY_RE = /^\d{4}-\d{2}-\d{2}(_.+)?$/;
+export const isPlanningEventKey = (k: string): boolean =>
+  PLANNING_EVENT_KEY_RE.test(k) || k.startsWith("_leg_");
+
+export function withEventClears<T extends EmbellishmentRow>(
+  next: T,
+  before: EmbellishmentRow | Record<string, unknown> | undefined | null,
+): T {
+  if (!before) return next;
+  const prev = before as Record<string, unknown>;
+  const clears = Object.keys(next).filter(
+    (k) =>
+      isPlanningEventKey(k) &&
+      String(next[k] ?? "").trim() === "" &&
+      String(prev[k] ?? "").trim() !== "",
+  );
+  if (clears.length === 0) return next;
+  return { ...next, __eventClears: clears.join("\n") };
+}
+
+// __eventClears -> the `_event_clears` array the server reads.
+const eventClearsOf = (row: EmbellishmentRow): string[] =>
+  typeof row.__eventClears === "string" && row.__eventClears
+    ? row.__eventClears.split("\n").filter(Boolean)
+    : [];
 
 export async function saveRow(row: EmbellishmentRow): Promise<void> {
   try {
@@ -250,6 +349,8 @@ export async function saveRow(row: EmbellishmentRow): Promise<void> {
       rowToSave.col3 = cleanCategory(rowToSave.col3);
     }
     rowToSave.col47 = derivePlanStatus(rowToSave);
+    const clears = eventClearsOf(row);
+    if (clears.length) rowToSave._event_clears = clears;
     const response = await apiFetch(`/rows/${rowToSave.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -379,6 +480,8 @@ export async function saveMultipleRows(rows: EmbellishmentRow[]): Promise<void> 
         }
       });
       cleanObj.col47 = derivePlanStatus(cleanObj);
+      const clears = eventClearsOf(r);
+      if (clears.length) cleanObj._event_clears = clears;
       return cleanObj as unknown as EmbellishmentRow;
     });
     // Deduplicate by id to prevent 'ON CONFLICT DO UPDATE command cannot affect row a second time' error
@@ -459,6 +562,93 @@ export async function saveColumns(cols: ColumnMapping): Promise<void> {
   }
 }
 
+// Season AOQ dates — { "<CATEGORY>|||<SEASON>": "YYYY-MM-DD" }. See triggerUtils.seasonAoqKey
+// for the key format both Trigger Manager and Score Card share.
+export type SeasonAoqMap = Record<string, string>;
+
+export async function getSeasonAoqConfig(): Promise<SeasonAoqMap> {
+  try {
+    const res = await apiFetch(`/season-aoq`);
+    if (!res.ok) throw new Error("Failed to fetch season AOQ config");
+    return await res.json();
+  } catch (err) {
+    console.warn("getSeasonAoqConfig failed:", err);
+    return {};
+  }
+}
+
+export async function saveSeasonAoqConfig(map: SeasonAoqMap): Promise<void> {
+  const res = await apiFetch(`/season-aoq`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(map),
+  });
+  if (!res.ok) throw new Error("Failed to save season AOQ config");
+}
+
+// Plant aliases — merge (aliases) or hide (excluded) plant names without touching raw
+// col11/col12 row data. Applied in app/lib/plantUtils.ts via applyPlantAliasConfig.
+export interface PlantAliasConfig {
+  aliases: Record<string, string>;
+  excluded: string[];
+}
+
+export async function getPlantAliasConfig(): Promise<PlantAliasConfig> {
+  try {
+    const res = await apiFetch(`/plant-aliases`);
+    if (!res.ok) throw new Error("Failed to fetch plant aliases");
+    const data = await res.json();
+    return {
+      aliases: data?.aliases && typeof data.aliases === "object" ? data.aliases : {},
+      excluded: Array.isArray(data?.excluded) ? data.excluded : [],
+    };
+  } catch (err) {
+    console.warn("getPlantAliasConfig failed:", err);
+    return { aliases: {}, excluded: [] };
+  }
+}
+
+export async function savePlantAliasConfig(config: PlantAliasConfig): Promise<void> {
+  const res = await apiFetch(`/plant-aliases`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error("Failed to save plant aliases");
+}
+
+// Trigger catalog — planner-defined Triggers, each with its own AOQ date and the Category +
+// Season it belongs to. Backs the Trigger autocomplete on col2 (Table.tsx) and the "Add Trigger"
+// form on the Season AOQ Dates page (TriggerManagementView.tsx).
+export interface TriggerCatalogEntry {
+  id: string;
+  name: string;
+  category: string;
+  season: string;
+  aoqIso: string; // "YYYY-MM-DD"
+}
+
+export async function getTriggerCatalog(): Promise<TriggerCatalogEntry[]> {
+  try {
+    const res = await apiFetch(`/trigger-catalog`);
+    if (!res.ok) throw new Error("Failed to fetch trigger catalog");
+    const data = await res.json();
+    return Array.isArray(data?.triggers) ? data.triggers : [];
+  } catch (err) {
+    console.warn("getTriggerCatalog failed:", err);
+    return [];
+  }
+}
+
+export async function saveTriggerCatalog(triggers: TriggerCatalogEntry[]): Promise<void> {
+  const res = await apiFetch(`/trigger-catalog`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ triggers }),
+  });
+  if (!res.ok) throw new Error("Failed to save trigger catalog");
+}
+
 // Default columns mapping
 export const DEFAULT_COLUMNS: ColumnMapping = {
   col1: "Status",
@@ -519,6 +709,16 @@ export const DEFAULT_COLUMNS: ColumnMapping = {
   // Edit Row modal. Like col40-col46 it needs no schema migration — any col number
   // above col33 routes through the `schedule` JSONB column automatically.
   col48: "Buy",
+  // Fabric used on the 2ND submission specifically — same free-text convention as col16
+  // ("Alternative Fabric"): blank = went out on the actual fabric, filled = the alternative
+  // fabric reference used. Needed because col16 alone only records ONE fabric decision for the
+  // whole row, but a combo commonly goes out on Alternative for the 1st submission and Actual
+  // for the 2nd (or vice versa) — col16 stays the 1st submission's answer, this is the 2nd's.
+  col49: "2nd Submission Fabric",
+  // Free-text note for the Fabric Dispatch sheet — what is actually being sent this time
+  // (e.g. body fabric already went, now sending the applique fabric). Shown on the Fabric
+  // Dispatch page and in its Excel export. Routes through `schedule` JSONB like col34+.
+  col50: "Fabric Dispatch Comment",
 };
 
 // Seed Mock Data in server
@@ -1077,6 +1277,17 @@ export const hasFinalStrikeReferenceOrDirective = (r: EmbellishmentRow): boolean
   );
 };
 
+// The ONE "final reference" case that DOES mean approved (planner, 2026-09-23): the C+P
+// directive has actually been carried out — the 2nd STRIKE OFF AWB# (col24) holds a real DHL/AWB
+// number AND is marked "Final Reference" (e.g. "DHL 8/25 9148951700 (NY Office) Final Referance"),
+// and no 2nd Strike-Off Comment (col34) has come back with a new verdict. A bare "… & SEND FINAL
+// SOFF" directive, or a "final ref" note with no second DHL, still stays C+P as above.
+export const hasFinalReferenceSecondDhl = (r: EmbellishmentRow): boolean => {
+  const c24 = String(r.col24 || '');
+  if (String(r.col34 || '').trim()) return false;
+  return FINAL_REFERENCE_RE.test(c24) && /\d{8,}/.test(c24.replace(/[\s-]/g, ''));
+};
+
 // Helper function to resolve item approval status
 // Evaluated based on col20 (Strike off Aesthetic Approval / Dropped) and col1/cell colors
 export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hold' | 'pending' | 'resubmit' | 'c+p' => {
@@ -1113,9 +1324,11 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
     c20.includes('DROPPED') || c20.includes('DROP') || c20.includes('REALLOCATED') || /\bMOVED\b/.test(c20) ||
     c1 === 'D' || c1.includes('DROPPED') || c1.includes('DROP') || c1.includes('REALLOCATED');
 
-  const isExplicitApproved =
-    c20.includes('APPROVED') || c20.includes('CONFIRMED') ||
+  // Status (col1) is what the planner sets by hand; col20 can be stale auto-written text.
+  const isStatusApproved =
     c1 === 'A' || c1 === 'C' || c1 === 'LA' || c1.includes('APPROVED') || c1.includes('CONFIRMED') || c1.includes('COMPLETED');
+  const isExplicitApproved =
+    c20.includes('APPROVED') || c20.includes('CONFIRMED') || isStatusApproved;
 
   // Approval is checked against BOTH strike-off comment columns independently, not just
   // "whichever is non-empty" (unlike the resubmit/dropped checks above, which deliberately use
@@ -1141,6 +1354,13 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
   // even if a stale col20 says "Approved" (an earlier auto-approve pass wrote that; the
   // page.tsx effect now self-heals it back to "C+P"). A real approval verdict in the comment
   // ("APPROVED FOR LAYOUT/TECH/EX") still wins via isCommentApproved below.
+  // A Status the planner set to Approved by hand always wins over the C+P hold below.
+  if (isStatusApproved) {
+    return 'approved';
+  }
+  if (isCommentCP && !isCommentApproved && hasFinalReferenceSecondDhl(r)) {
+    return 'approved';
+  }
   if (isCommentCP && !isCommentApproved && hasFinalStrikeReferenceOrDirective(r)) {
     return 'c+p';
   }
@@ -1195,10 +1415,16 @@ export function hasPlacementApproval(r: EmbellishmentRow): boolean {
   return /APPROV|CONFIRM/.test(v);
 }
 
-// Buy status (col48) — a manual planner flag, "Y" = this graphic/combo has an order buy,
-// anything else (incl. blank) = no buy yet. Kept deliberately simple: two states only.
+// Buy status (col48) — "Y" = this graphic/combo has an order buy, "N" = no buy. An explicit
+// Y/N always wins (the planner's toggle, or a future buy-data import). BLANK falls back to the
+// colour approval: per the planner (2026-09-30), colour sign-offs so far were only taken for
+// graphics that came for the buy, so until the real buy data is loaded a colour-approved row
+// counts as Has Buy. Toggling it to "No Buy" writes an explicit "N" and overrides this.
 export function hasBuy(r: EmbellishmentRow): boolean {
-  return String(r.col48 || '').trim().toUpperCase() === 'Y';
+  const v = String(r.col48 || '').trim().toUpperCase();
+  if (v === 'Y') return true;
+  if (v === 'N') return false;
+  return hasColorApproval(r);
 }
 
 // Graphic Type (col19) values the business does NOT want inflating Advanced Analytics'
@@ -1345,5 +1571,22 @@ export const groupRowsByCombo = (rows: EmbellishmentRow[]): EmbellishmentRow[][]
     else m.set(key, [r]);
   }
   return [...m.values()];
+};
+
+// Colour-approval state per combo (same Style|Graphic|Combo|Ground key as groupRowsByCombo),
+// scoped to APPROVED combos only — matches Advanced Analytics' Color Approval card:
+//   "colorApproved"   = Approved combo with a colour sign-off on any member row
+//   "missingColor"    = Approved combo with no colour sign-off yet
+// Combos that aren't Approved get no entry. Used by the Dashboard's Color Approval filter.
+export type ComboColorState = "colorApproved" | "missingColor";
+export const comboKeyOf = (r: EmbellishmentRow): string =>
+  [r.col5, r.col7, r.col6, r.col8].map((v) => String(v || "").trim()).join("|");
+export const colorApprovalByCombo = (rows: EmbellishmentRow[]): Map<string, ComboColorState> => {
+  const out = new Map<string, ComboColorState>();
+  for (const g of groupRowsByCombo(rows)) {
+    if (getGroupStatus(g) !== "approved") continue;
+    out.set(comboKeyOf(g[0]), g.some(hasColorApproval) ? "colorApproved" : "missingColor");
+  }
+  return out;
 };
 

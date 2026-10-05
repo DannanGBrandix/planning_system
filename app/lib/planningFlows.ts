@@ -1,7 +1,6 @@
 import { parseEventValue } from "./eventCodes";
 import { isSriLankaHoliday } from "./sriLankaHolidays";
 import { extractPlants } from "./plantUtils";
-import { isCkFamilyCategory } from "./ckCategories";
 
 // BABL runs on its own, much longer turnaround than every other plant: fabric sent there isn't
 // received (FR) the next working day like everywhere else — it takes 8 working days — and BABL's
@@ -12,6 +11,20 @@ import { isCkFamilyCategory } from "./ckCategories";
 const BABL_LONG_LEAD_DAYS = 8;
 function isBablPlant(plantRaw: unknown): boolean {
   return extractPlants(String(plantRaw ?? "")).includes("BABL");
+}
+
+// BABL and AV (see getPlanningCategory) only ever run the FABRICS-style
+// flow (FS-first) — never SEWIN/GMT (Garments) or SEWIN/MOC (Mock-Ups) — regardless of what the
+// row's own Application Form / S-Off Requirement says. Checked via extractPlants (handles
+// multi-plant chains and every plant-name alias — "AV1"/"AV2"/"BFFAV"/"BRANDIXEMB" all canonicalize
+// to "AV") against BOTH the Plant (col11) and Plant Flow (col12) columns, same as every other
+// plant-structure check in this file. col12 is skipped when it's actually PROCESS free text, not a
+// plant chain (plantFlowIsProcessText) — same guard detectMatchingFlowRaw uses.
+const FABRIC_ONLY_PLANTS = new Set(["BABL", "AV"]);
+function isFabricOnlyPlant(row: Record<string, unknown>): boolean {
+  const plant = extractPlants(String(row.col11 ?? ""));
+  const plantFlow = plantFlowIsProcessText(row.col12) ? [] : extractPlants(String(row.col12 ?? ""));
+  return plant.some((p) => FABRIC_ONLY_PLANTS.has(p)) || plantFlow.some((p) => FABRIC_ONLY_PLANTS.has(p));
 }
 
 // A day the auto-scheduler must skip over — not just Saturday/Sunday, but also any gazetted Sri
@@ -99,7 +112,6 @@ export const EVENT_SUFFIXES = {
 };
 
 export const POST_NY_TESTING_RULES = [
-  { trigger: "CK", testEvent: "CK-TEST", description: "Plan CK Check Test after NY" },
   { trigger: "V8 & PINK", testEvent: "DTC-3010 / LTD-92", description: "Plan DTC-3010 / LTD-92 testing after NY" },
 ];
 
@@ -176,7 +188,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     steps: [
       { fromEvent: "FS", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSDS", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "PPSDS", toEvent: "RDPS", leadTimeDays: 1, label: "1d" },
+      { fromEvent: "PPSDS", toEvent: "RDPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "RDPS", toEvent: "PPS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
@@ -185,7 +197,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 35,
+    totalLeadTimeDays: 36,
   },
   {
     id: 4,
@@ -256,7 +268,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSDS", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "PPSDS", toEvent: "RDPS", leadTimeDays: 1, label: "1d" },
+      { fromEvent: "PPSDS", toEvent: "RDPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "RDPS", toEvent: "PPS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
@@ -265,7 +277,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
 
   // ------------------------------------------------------------
@@ -318,7 +330,8 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     sequence: ["SEWIN/SEWS", "GMT", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
-      { fromEvent: "GMT", toEvent: "RDPS", leadTimeDays: 1, label: "1d" },
+      // 2 working days, same as the PPSDS -> RDPS dye step in fabrics/mock-ups (changed 2026-09-30).
+      { fromEvent: "GMT", toEvent: "RDPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "RDPS", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
       { fromEvent: "PPS", toEvent: "NY", leadTimeDays: 1, label: "1d" },
       { fromEvent: "NY", toEvent: "NYC", leadTimeDays: 14, label: "2W" },
@@ -327,7 +340,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 35,
+    totalLeadTimeDays: 36,
   },
 
   // ------------------------------------------------------------
@@ -419,13 +432,25 @@ export function addWorkingDays(startDate: Date, calendarDays: number): Date {
  */
 export function calculateAutoSchedule(
   startDateStr: string,
-  flowId: number,
+  flowIdOrFlow: number | PlanningFlow,
   eventSuffix: "S" | "F" | "T" = "S",
   triggerBrand?: string,
   failedEventsMap?: Record<string, { dateKey: string; val: string; code: string }>,
-  plantRaw?: unknown
+  plantRaw?: unknown,
+  // Planner-locked ("|X") milestones, keyed by dateKey — a mid-flow event that was manually
+  // dropped on a specific day (e.g. moving PPS out after a retry). Every step at/after a pinned
+  // code must re-anchor its forward walk to the REAL pinned date instead of the naive lead-time
+  // math, or every downstream milestone silently drifts off the sequence-only computed date
+  // (confirmed against real data: pinning PPS on a later date only fixed PPS's own cell — NY/NYC/
+  // MAST after it kept cascading off the wrong, un-pinned date this function computed internally).
+  pinnedEventsMap?: Record<string, { dateKey: string; val: string; code: string }>
 ): Record<string, string> {
-  const flow = PLANNING_FLOWS.find((f) => f.id === flowId);
+  // Accepts either a flow id (looked up from the static list, e.g. an external caller) or an
+  // already-resolved PlanningFlow (e.g. matchedFlow/flow from autoScheduleEmbellishmentRow /
+  // resumeStaleFlow, which may be the row's graphic-type-adjusted flow — see
+  // detectMatchingFlow/applyGraphicTypeSkip). Re-resolving by id there would silently discard that
+  // adjustment (NY/NYC would come back for a Branding/Trial row's schedule).
+  const flow = typeof flowIdOrFlow === "number" ? PLANNING_FLOWS.find((f) => f.id === flowIdOrFlow) : flowIdOrFlow;
   if (!flow) return {};
 
   const isBabl = isBablPlant(plantRaw);
@@ -464,8 +489,14 @@ export function calculateAutoSchedule(
         .sort((a, b) => a.dateKey.localeCompare(b.dateKey))
     : [];
   const firstFailed = firstFailedList.length > 0 ? firstFailedList[firstFailedList.length - 1] : null;
+  const firstPinned = pinnedEventsMap
+    ? Object.values(pinnedEventsMap).find((p) => p.code === firstBase)
+    : undefined;
 
-  if (firstFailed) {
+  if (firstPinned) {
+    resultSchedule[firstPinned.dateKey] = firstPinned.val;
+    current = new Date(firstPinned.dateKey);
+  } else if (firstFailed) {
     // Keep EVERY failed attempt of the first event on its own date, not just the latest one.
     firstFailedList.forEach((f) => {
       resultSchedule[f.dateKey] = f.val;
@@ -494,10 +525,23 @@ export function calculateAutoSchedule(
     const codeToUse = step.toEvent;
     const baseCode = codeToUse.split("-")[0].toUpperCase();
 
+    // A pinned milestone always wins: the planner explicitly dropped it on this exact day, so use
+    // that real date verbatim and re-anchor the forward walk to it — every step after this one
+    // must cascade off the REAL pinned date, not the lead-time-only date this loop would otherwise
+    // compute for it.
+    const pinnedForStep = pinnedEventsMap
+      ? Object.values(pinnedEventsMap).find((p) => codeMatchesSlot(p.code, baseCode))
+      : undefined;
+    if (pinnedForStep) {
+      resultSchedule[pinnedForStep.dateKey] = pinnedForStep.val;
+      current = new Date(pinnedForStep.dateKey);
+      return;
+    }
+
     // Find ALL failed attempts for this event code sorted by date
     const failedListForStep = failedEventsMap
       ? Object.values(failedEventsMap)
-          .filter((f) => f.code === baseCode || f.code.startsWith(baseCode) || baseCode.startsWith(f.code))
+          .filter((f) => codeMatchesSlot(f.code, baseCode))
           .sort((a, b) => a.dateKey.localeCompare(b.dateKey))
       : [];
 
@@ -528,10 +572,6 @@ export function calculateAutoSchedule(
     // Check Post-NY testing rule
     if (step.fromEvent === "NY") {
       const brandUpper = (triggerBrand || "").toUpperCase();
-      if (brandUpper.includes("CK")) {
-        resultSchedule[dateKey] = `CK-TEST`;
-        return;
-      }
       if (brandUpper.includes("V8") || brandUpper.includes("PINK")) {
         resultSchedule[dateKey] = `DTC-3010`;
         return;
@@ -556,12 +596,7 @@ export function calculateAutoSchedule(
       const existing = resultSchedule[f.dateKey];
       const existingBase = existing ? existing.split("|")[0].split("-")[0].toUpperCase() : "";
       const failBase = f.code.split("-")[0].toUpperCase();
-      if (
-        !existing ||
-        existingBase === failBase ||
-        existingBase.startsWith(failBase) ||
-        failBase.startsWith(existingBase)
-      ) {
+      if (!existing || codeMatchesSlot(existingBase, failBase)) {
         resultSchedule[f.dateKey] = f.val;
       }
       const base = f.code.split("-")[0].toUpperCase();
@@ -640,21 +675,23 @@ export function getApplicationFormCategory(row: Record<string, unknown>): Applic
 }
 
 /**
- * The category a row is actually PLANNED as — getApplicationFormCategory plus the CK-as-fabric
- * rule (a CK-family item whose Application Form / S-Off Requirement says Garments or Mock-Ups is
- * planned the FABRICS way, starting FS). Callers that must line up with the row's real event
- * sequence — flow detection, the Fabric Dispatch export's sheet routing — use THIS, not the raw
- * Application-Form category, otherwise a CK garment row is planned FS-first but exported onto a
- * per-plant GARMENT tab.
+ * The category a row is actually PLANNED as — getApplicationFormCategory plus the fabric-only
+ * override: a row running at BABL / AV (by Plant, col11/col12 — see isFabricOnlyPlant) is
+ * ALWAYS planned the FABRICS way, starting FS, whatever its S-Off Requirement. Callers that must
+ * line up with the row's real event sequence — flow detection, the Fabric Dispatch export's sheet
+ * routing — use THIS, not the raw Application-Form category.
+ *
+ * CK-family rows are NOT overridden any more (2026-10-05, per the planner): they follow the
+ * S-Off Requirement like every other category, so a CK "MOCK UP" / "GARMENT" row gets the
+ * SEWIN-first Mock-Ups / Garments flow. (From 2026-09-30 to 2026-10-05 they were forced to FABRICS.)
  */
 export function getPlanningCategory(row: Record<string, unknown>): ApplicationFormCategory {
   const category = getApplicationFormCategory(row);
-  if (
-    isCkFamilyCategory(String(row.col3 || "")) &&
-    (category === "GARMENTS" || category === "MOCK-UPS")
-  ) {
-    return "FABRICS";
-  }
+  // BABL / AV: ALWAYS the fabric flow, whatever the S-Off Requirement says — Cut Panel and Fit
+  // included, not just Garments / Mock-Ups (per the planner, 2026-09-30: a BABL leg with S-Off
+  // Req "Cut Panel" was planned CSRF -> CPS instead of sending fabric). A cross-dev leg is
+  // scheduled with col11 = that leg's plant alone, so only the BABL/AV leg is affected.
+  if (isFabricOnlyPlant(row)) return "FABRICS";
   return category;
 }
 
@@ -663,8 +700,9 @@ export function getPlanningCategory(row: Record<string, unknown>): ApplicationFo
  * Application-Form category (FABRICS has 4, MOCK-UPS 3, GARMENTS 3, CUT PANELS 2, FIT FUNCTIONALS
  * 1). detectMatchingFlow auto-picks ONE of these from plant/process structure; this returns the
  * full menu so the planner can override it (Event Status panel "Apply a planning flow" section).
- * The CK-as-fabric rule (see detectMatchingFlow) is mirrored here so a CK garment/mock-up row
- * offers the fabric flows, matching what auto-detection would do.
+ * The fabric-only rule (see getPlanningCategory) is inherited here too — via getPlanningCategory,
+ * not a separate copy — so a BABL or AV garment/mock-up row offers the fabric flows,
+ * matching what auto-detection would do.
  */
 export function getApplicableFlows(row: Record<string, unknown>): PlanningFlow[] {
   const category: PlanningFlow["category"] = getPlanningCategory(row);
@@ -675,6 +713,22 @@ export function getApplicableFlows(row: Record<string, unknown>): PlanningFlow[]
 // verdict tail stripped ("FR-S" -> "FR", "PPS|P" -> "PPS", "CK-TEST" stays "CK-TEST").
 function planCycleEventBase(v: string): string {
   return v.split("|")[0].trim().toUpperCase().replace(/-(S|F|T|PASS|FAIL)$/i, "");
+}
+
+// Two milestone base codes "match" only when they're identical, or one is a slash-separated half
+// of a combined slot the other represents ("REAP" is one half of "REAP/FCHP", "SEWIN" one half of
+// "SEWIN/SEWS"). A plain string-prefix check ("x.startsWith(y) || y.startsWith(x)") was used here
+// instead and matched unrelated codes that merely happen to share a prefix — "PPSDS".startsWith
+// ("PPS") and "NYC".startsWith("NY") are both true even though PPS/PPSDS and NY/NYC are distinct
+// milestones. That made a PPSDS failure get treated as a failure of the PPS step: PPS was skipped
+// entirely and the forward date-walk reset backwards to the PPSDS retry, landing NY BEFORE RDPS
+// (confirmed against real data: GVU27-059 / 10356689 combo C1 — failing PPSDS corrupted every
+// event from PPS onward).
+function codeMatchesSlot(a: string, b: string): boolean {
+  if (a === b) return true;
+  const aParts = a.split("/");
+  const bParts = b.split("/");
+  return aParts.includes(b) || bParts.includes(a);
 }
 
 // A gap this large (calendar days) between two consecutive scheduled events means the later one
@@ -771,7 +825,56 @@ export function detectPlanCycles(row: Record<string, unknown>): PlanCycle[] {
   });
 }
 
-export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
+// Graphic Type (col19) values that never go to New York — per the planner, Branding and Trial
+// graphics are visibly called out in that column on the dashboard already, so no separate flag
+// is needed to decide it. Same values/matching convention as db.ts's
+// ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES (lowercase substring match).
+const NY_SKIPPED_GRAPHIC_TYPES = ["branding", "trial"];
+
+function skipsNyForGraphicType(row: Record<string, unknown>): boolean {
+  const graphicType = String(row.col19 || "").toLowerCase();
+  return NY_SKIPPED_GRAPHIC_TYPES.some((t) => graphicType.includes(t));
+}
+
+/**
+ * Bridges a flow's NY/NYC leg out entirely — the step feeding NY reconnects straight to whatever
+ * followed NYC, reusing that feeding step's own lead time (same convention already used by the
+ * "Direct Fabrics Fast-Track" flow, which bypasses NY/NYC the same way). A flow with no NY/NYC
+ * (already a fast-track / FIT FUNCTIONALS flow) is returned unchanged.
+ */
+function stripNyNyc(flow: PlanningFlow): PlanningFlow {
+  const isNyNode = (event: string) => event === "NY" || event === "NYC";
+  if (!flow.sequence.some(isNyNode)) return flow;
+
+  const toNy = flow.steps.find((s) => isNyNode(s.toEvent) && !isNyNode(s.fromEvent));
+  const fromNy = [...flow.steps].reverse().find((s) => isNyNode(s.fromEvent) && !isNyNode(s.toEvent));
+  const steps = flow.steps.filter((s) => !isNyNode(s.fromEvent) && !isNyNode(s.toEvent));
+  if (toNy && fromNy) {
+    const keptBefore = flow.steps.slice(0, flow.steps.indexOf(toNy)).filter(
+      (s) => !isNyNode(s.fromEvent) && !isNyNode(s.toEvent),
+    ).length;
+    steps.splice(keptBefore, 0, {
+      fromEvent: toNy.fromEvent,
+      toEvent: fromNy.toEvent,
+      leadTimeDays: toNy.leadTimeDays,
+      label: toNy.label,
+    });
+  }
+
+  return {
+    ...flow,
+    sequence: flow.sequence.filter((s) => !isNyNode(s)),
+    steps,
+    totalLeadTimeDays: steps.reduce((sum, s) => sum + s.leadTimeDays, 0),
+  };
+}
+
+function applyGraphicTypeSkip(row: Record<string, unknown>, flow: PlanningFlow): PlanningFlow {
+  return skipsNyForGraphicType(row) ? stripNyNyc(flow) : flow;
+}
+
+/** Auto-picks the planning flow for a row's plant/process structure — see detectMatchingFlow. */
+function detectMatchingFlowRaw(row: Record<string, unknown>): PlanningFlow {
   const process = String(String(String(String(String(row.col10 || ""))))).toUpperCase();
   // col12 that is actually a PROCESS description (not a plant chain) is ignored for every
   // plant-structure check below — see plantFlowIsProcessText.
@@ -781,11 +884,10 @@ export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
   const plant = String(String(String(String(String(row.col11 || ""))))).toUpperCase();
 
   // 1. Determine Application Form Category
-  // CK-only rule (inside getPlanningCategory): a CK-category item whose S-Off Requirement is
-  // Garments or Mock-Ups is planned the FABRICS way — starting FS (not the SEWIN-first
-  // garments/mock-ups flow) — and still picks up the dye-plant (PPSDS -> RDPS) and two-plant
-  // (PPSES) fabric variants from the plant-structure checks below. Only CK behaves this way;
-  // every other Garments/Mock-Ups item keeps its own flow.
+  // Fabric-only rule (inside getPlanningCategory): a row running at BABL / AV is planned the
+  // FABRICS way — starting FS — whatever its S-Off Requirement, and still picks up the dye-plant
+  // (PPSDS -> RDPS) and two-plant (PPSES) fabric variants from the plant-structure checks below.
+  // Every other row (CK included, since 2026-10-05) follows its S-Off Requirement.
   const category = getPlanningCategory(row);
 
   if (category === "FIT FUNCTIONALS") {
@@ -918,6 +1020,15 @@ export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
 }
 
 /**
+ * Auto-picks the planning flow for this row from its plant/process structure (detectMatchingFlow-
+ * Raw), then drops NY/NYC from it when the row's Graphic Type (col19) is Branding or Trial —
+ * those never go to New York, so no planning event should ever be generated for either milestone.
+ */
+export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
+  return applyGraphicTypeSkip(row, detectMatchingFlowRaw(row));
+}
+
+/**
  * For a row that's one stage of a multi-plant PLANT FLOW chain (e.g. "LEEMA>BFL>RICHCOLOR"),
  * returns which of the matched flow's sequence events actually belong to THIS row's plant —
  * so auto-scheduling one stage's row doesn't stamp the entire end-to-end sequence onto it.
@@ -943,9 +1054,15 @@ export function getEventsForChainStage(
   if (plantFlowIsProcessText(plantFlowRaw)) return null;
 
   const PLANT_CHAIN_SPLIT = />>|->|=>|,|\+|\/|>/;
+  // A "/" INSIDE one PLANT FLOW stage lists alternative plants for that stage (a cross-dev
+  // split), NOT further stages: "BFL (WA01055) >>ANTLER/REGAL/EXPO" is BFL -> one of
+  // ANTLER/REGAL/EXPO, i.e. 2 stages. Splitting on "/" here made it a 4-plant chain, so the EXPO
+  // row counted as the LAST stage and only got PPS onward (SEWIN/GMT/RDPS were handed to
+  // phantom earlier plants). Confirmed against real data: GVF27-012 / 10356717 (C2).
+  const STAGE_SPLIT = />>|->|=>|,|\+|>/;
   const segments = String(plantFlowRaw || "")
     .toUpperCase()
-    .split(PLANT_CHAIN_SPLIT)
+    .split(STAGE_SPLIT)
     .map((s) => s.trim())
     .filter(Boolean);
   if (segments.length < 2) return null;
@@ -966,7 +1083,9 @@ export function getEventsForChainStage(
 
   const plant = String(plantRaw || "").trim().toUpperCase();
   if (!plant) return null;
-  const plantMatches = (s: string) => s === plant || plant.includes(s) || s.includes(plant);
+  const plantMatches = (seg: string) =>
+    seg.split("/").map((s) => s.trim()).filter(Boolean)
+      .some((s) => s === plant || plant.includes(s) || s.includes(plant));
   const myIndex = segments.findIndex(plantMatches);
   if (myIndex === -1) return null;
 
@@ -1221,7 +1340,13 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   row: T,
   flowId?: number,
   startDateStr?: string,
-  eventSuffix: "S" | "F" | "T" = "S"
+  eventSuffix: "S" | "F" | "T" = "S",
+  // skipNyNyc: drop NY/NYC from the flow regardless of Graphic Type — used only for the
+  // brand-new-row scheduling that runs right after a tracking-chart import (Import Excel /
+  // Planning Sheet / CK Tracking Chart), per the planner: an import shouldn't stamp NY/NYC
+  // submission dates in on its own, only the milestones up to PPS. Manual scheduling (Auto-
+  // Schedule button, Replan, Apply Flow, the Event Status Panel) is untouched and keeps NY/NYC.
+  options?: { skipNyNyc?: boolean }
 ): T {
   // STRICT GATE: a row gets planning events ONLY when it has BOTH a real Plant and a real S-Off
   // Requirement (hasCompleteAllocationContext). No S-Off Requirement -> no planning events, full
@@ -1258,8 +1383,13 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   });
   const pinnedKeys = new Set(Object.values(pinnedDateByCode));
 
-  const matchedFlow = flowId ? PLANNING_FLOWS.find((f) => f.id === flowId) || detectMatchingFlow(row) : detectMatchingFlow(row);
-  
+  let matchedFlow = flowId
+    ? applyGraphicTypeSkip(row, PLANNING_FLOWS.find((f) => f.id === flowId) || detectMatchingFlow(row))
+    : detectMatchingFlow(row);
+  if (options?.skipNyNyc) {
+    matchedFlow = stripNyNyc(matchedFlow);
+  }
+
   // Start date is always "as soon as possible" — the next working day — once a row's allocation
   // data is complete, full stop. This used to also check Fabric In Date (col14) / Ready Date
   // (col28) and push the start out to whichever of those was a future date, on the theory that an
@@ -1271,31 +1401,48 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   // same-file date field of uncertain reliability.
   let effectiveStartDate = startDateStr;
   if (!effectiveStartDate && pinnedKeys.size > 0) {
-    // A row with locked milestones: BACK-SOLVE the flow start from the earliest locked milestone
-    // so its slot in the sequence lands on exactly the day the planner pinned it (and everything
-    // downstream cascades off it). This also means a leftover "-S" pill from a finished earlier
-    // planning cycle can't drag the fresh plan back onto its old dates — the exact bug this
-    // locking was added to stop.
     const earliestPinnedDate = Array.from(pinnedKeys).sort()[0];
-    const earliestPinnedCode = Object.keys(pinnedDateByCode).find(
-      (c) => pinnedDateByCode[c] === earliestPinnedDate,
+
+    // Prefer the REAL earliest date already recorded in the SAME planning cycle as this pin (its
+    // actual FS/FR/fail-retry history) over back-solving a fictitious start purely from the pin's
+    // lead-time math. Back-solving unconditionally — ignoring real history still sitting right on
+    // the row — was rewriting FS/FR to brand-new invented dates every time a downstream event got
+    // failed/passed (which routes through this full rebuild) AFTER an earlier mid-flow milestone
+    // had been manually moved/pinned: confirmed against real data — fail PPSDS, move PPS out to a
+    // later date (pinning it), then later fail NY — FS/FR silently reset to dates back-solved from
+    // PPS's new position instead of staying on their real recorded dates, corrupting the whole plan.
+    // detectPlanCycles already knows how to tell "this pin's own real history" apart from "a stale
+    // leftover from an abandoned earlier cycle" (>45-day gap / first-milestone-repeats rule), so
+    // reuse it instead of duplicating that judgment here.
+    const pinCycle = detectPlanCycles(row).find(
+      (c) => c.startKey <= earliestPinnedDate && earliestPinnedDate <= c.endKey,
     );
-    const seqIdx = earliestPinnedCode
-      ? matchedFlow.sequence.findIndex((slot) =>
-          slot.split("/").some((p) => p.split("-")[0].trim().toUpperCase() === earliestPinnedCode),
-        )
-      : -1;
-    if (seqIdx > 0) {
-      let cumulativeDays = 0;
-      for (let i = 0; i < seqIdx && i < matchedFlow.steps.length; i++) {
-        cumulativeDays += matchedFlow.steps[i].leadTimeDays;
-      }
-      effectiveStartDate = subtractWorkingDays(new Date(earliestPinnedDate), cumulativeDays)
-        .toISOString()
-        .split("T")[0];
+    if (pinCycle && pinCycle.startKey < earliestPinnedDate) {
+      effectiveStartDate = pinCycle.startKey;
     } else {
-      // Pinned milestone is the flow's opener (or not in the flow): its date IS the start.
-      effectiveStartDate = earliestPinnedDate;
+      // No earlier real history in this cycle (the pin IS the earliest event) — BACK-SOLVE the
+      // flow start from the pinned milestone so its slot in the sequence lands on exactly the day
+      // the planner pinned it (and everything downstream cascades off it).
+      const earliestPinnedCode = Object.keys(pinnedDateByCode).find(
+        (c) => pinnedDateByCode[c] === earliestPinnedDate,
+      );
+      const seqIdx = earliestPinnedCode
+        ? matchedFlow.sequence.findIndex((slot) =>
+            slot.split("/").some((p) => p.split("-")[0].trim().toUpperCase() === earliestPinnedCode),
+          )
+        : -1;
+      if (seqIdx > 0) {
+        let cumulativeDays = 0;
+        for (let i = 0; i < seqIdx && i < matchedFlow.steps.length; i++) {
+          cumulativeDays += matchedFlow.steps[i].leadTimeDays;
+        }
+        effectiveStartDate = subtractWorkingDays(new Date(earliestPinnedDate), cumulativeDays)
+          .toISOString()
+          .split("T")[0];
+      } else {
+        // Pinned milestone is the flow's opener (or not in the flow): its date IS the start.
+        effectiveStartDate = earliestPinnedDate;
+      }
     }
   }
   if (!effectiveStartDate) {
@@ -1364,8 +1511,27 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
     staleCodeDateKeys.get(code)!.push(k);
   });
 
+  // Same pinned-milestone map as above ({code -> dateKey}), reshaped to calculateAutoSchedule's
+  // {dateKey -> {dateKey, val, code}} so its forward walk can re-anchor "current" onto the REAL
+  // pinned date at/after each pinned step instead of drifting off its own lead-time-only math.
+  const pinnedEventsMap: Record<string, { dateKey: string; val: string; code: string }> = {};
+  Object.entries(pinnedDateByCode).forEach(([code, dateKey]) => {
+    const val = row[dateKey];
+    if (typeof val === "string" && val.trim()) {
+      pinnedEventsMap[dateKey] = { dateKey, val, code };
+    }
+  });
+
   const triggerBrand = String(row.col3 || row.col7 || "");
-  const scheduleMap = calculateAutoSchedule(effectiveStartDate, matchedFlow.id, eventSuffix, triggerBrand, failedEventsMap, row.col11);
+  const scheduleMap = calculateAutoSchedule(
+    effectiveStartDate,
+    matchedFlow,
+    eventSuffix,
+    triggerBrand,
+    failedEventsMap,
+    row.col11,
+    pinnedEventsMap,
+  );
 
   // If this row is one stage of a multi-plant PLANT FLOW chain (e.g. "LEEMA>BFL>RICHCOLOR"),
   // the FULL sequence's dates are still calculated above (the lead-time math has to account for
@@ -1423,7 +1589,7 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
 
     if (preserved) {
       const preservedBase = preserved.code.split("-")[0].toUpperCase();
-      if (valBase === preservedBase || valBase.startsWith(preservedBase) || preservedBase.startsWith(valBase)) {
+      if (codeMatchesSlot(valBase, preservedBase)) {
         updatedRow[dateKey] = preserved.val;
       } else {
         updatedRow[dateKey] = val;
@@ -1681,9 +1847,22 @@ export function autoScheduleForwardFromEvent<T extends Record<string, unknown>>(
     );
     if (hasVerdict) continue;
 
+    // A downstream milestone the planner LOCKED ("|X", e.g. PPS dragged to a later day) stays on
+    // its pinned day and the rest of the walk cascades off that real date. Without this, marking
+    // an earlier event (FR) Pass rewrote a fresh "PPS-S" at the lead-time date next to the pinned
+    // PPS — two PPS pills, with NY pulled back in front of the pinned one.
+    const pinnedKey = Object.keys(out).find((k) => {
+      const v = out[k];
+      return /^\d{4}-\d{2}-\d{2}$/.test(k) && typeof v === "string" && v.trim() &&
+        parseEventValue(v)?.isPinned === true && codeMatchesSlot(milestoneBase(v), toBase);
+    });
+    if (pinnedKey) {
+      current = new Date(pinnedKey);
+      continue;
+    }
+
     const dateKey = toISO(current);
     if (step.fromEvent === "NY") {
-      if (brand.includes("CK")) { out[dateKey] = "CK-TEST"; continue; }
       if (brand.includes("V8") || brand.includes("PINK")) { out[dateKey] = "DTC-3010"; continue; }
     }
     out[dateKey] = toSlot.includes("-") ? step.toEvent : `${toBase}-S`;
@@ -1739,7 +1918,7 @@ export function continueStalledSchedule<T extends Record<string, unknown>>(
   }
 
   const triggerBrand = String(row.col3 || row.col7 || "");
-  const scheduleMap = calculateAutoSchedule(fromDateStr, flow.id, "S", triggerBrand, undefined, row.col11);
+  const scheduleMap = calculateAutoSchedule(fromDateStr, flow, "S", triggerBrand, undefined, row.col11);
 
   const updatedRow: Record<string, unknown> = { ...row };
   Object.entries(scheduleMap).forEach(([dateKey, val]) => {

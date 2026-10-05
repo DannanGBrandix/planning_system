@@ -6,6 +6,7 @@ import { encodeEventValue, parseEventValue } from "./lib/eventCodes";
 import { loadCodes } from "./lib/codesStore";
 import {
   getAllRows,
+  getArchivedRows,
   saveRow,
   saveMultipleRows,
   deleteRow,
@@ -24,9 +25,14 @@ import {
   getRowStatus,
   hasColorApproval,
   hasFinalStrikeReferenceOrDirective,
+  hasFinalReferenceSecondDhl,
   cleanSeason,
   cleanCategory,
   isRowSent,
+  withEventClears,
+  isPlanningEventKey,
+  colorApprovalByCombo,
+  comboKeyOf,
   createBackup,
   DEFAULT_COLUMNS,
   listPendingUpdates,
@@ -36,6 +42,10 @@ import {
   CkChartStatus,
   derivePlanStatus,
   isExcludedFromAdvancedAnalytics,
+  groupRowsByCombo,
+  getGroupStatus,
+  getLastRowsSync,
+  RowsSyncInfo,
 } from "./lib/db";
 import Table from "./components/Table";
 import ColumnConfigModal from "./components/ColumnConfigModal";
@@ -56,19 +66,23 @@ import CkSyncButton from "./components/CkSyncButton";
 import ActionCenterView from "./components/ActionCenterView";
 import GlobalSidebar from "./components/GlobalSidebar";
 import PlantSchedulesView from "./components/PlantSchedulesView";
-import PlantPerformanceDashboard from "./components/PlantPerformanceDashboard";
+import ScoreCardDashboard from "./components/ScoreCardDashboard";
+import PlantPerformanceView from "./components/PlantPerformanceView";
+import NewVersionModal, { NewVersionInput } from "./components/NewVersionModal";
 import FabricDispatchView from "./components/FabricDispatchView";
 import TriggerManagementView from "./components/TriggerManagementView";
 import ReportsView from "./components/ReportsView";
+import SummaryOfGraphicsView from "./components/SummaryOfGraphicsView";
 import EventStatusPanel from "./components/EventStatusPanel";
 import SlaWatchlistBar from "./components/SlaWatchlistBar";
 import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
 import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
-import { plantFromFlow, legPlantFlow } from "./lib/plantUtils";
-import { deriveNycVerdict } from "./lib/nycVerdict";
+import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants } from "./lib/plantUtils";
+import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
+import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
-import { isHiddenEventTrigger } from "./lib/triggerUtils";
+import { isHiddenEventTrigger, seasonBase } from "./lib/triggerUtils";
 import {
   ckCategoryFromFilename,
   ckCategoryCanonical,
@@ -119,23 +133,34 @@ function classifyFillColor(rgbHex: string): "grey" | "green" | "pink" | "none" {
 export default function Home() {
   // App states
   const [rows, setRows] = useState<EmbellishmentRow[]>([]);
+  // Older versions (is_current = false) — loaded separately, never mixed into `rows` (dashboards,
+  // imports and matching only see current versions). Used by Revision History + Plant Performance.
+  const [archivedRows, setArchivedRows] = useState<EmbellishmentRow[]>([]);
+  const [newVersionRow, setNewVersionRow] = useState<EmbellishmentRow | null>(null);
+  useEffect(() => {
+    getArchivedRows().then(setArchivedRows);
+  }, []);
   const [draftRows, setDraftRows] = useState<EmbellishmentRow[]>([]);
   const [columns, setColumns] = useState<ColumnMapping>({});
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [isDueTomorrowAlertOpen, setIsDueTomorrowAlertOpen] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<
-    "standard" | "advanced" | "actionCenter" | "plantSchedules" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports"
+    "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics"
   >("standard");
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
     useState<string>("");
   const [selectedSeasonFilter, setSelectedSeasonFilter] = useState<string>("");
   const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string>("");
+  const [selectedPlantFilter, setSelectedPlantFilter] = useState<string>("");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<"All" | "Active" | "Dropped" | "Hold" | "Approved" | "C+P" | "Pending" | "Resubmit">("Active");
   // Plan Status (col47) filter — the planning-lifecycle flag, independent of the S/off Status
   // filter above and of anything Advanced Analytics reads.
   const [selectedPlanStatusFilter, setSelectedPlanStatusFilter] = useState<"All" | "Active" | "Dropped" | "Unplanned">("All");
   const [dhlFilter, setDhlFilter] = useState<"all" | "withDhl" | "noDhl">("all");
+  // Color Approval filter — combo-level, Approved combos only (same basis as the Advanced
+  // Analytics Color Approval card): with a colour sign-off vs. still missing one.
+  const [colorFilter, setColorFilter] = useState<"all" | "colorApproved" | "missingColor">("all");
   const [slaFilter, setSlaFilter] = useState<"all" | "overdue" | "dueSoon" | "priority">("all");
   const [advancedSelections, setAdvancedSelections] =
     useState<FilterSelections>({
@@ -323,6 +348,11 @@ export default function Home() {
   const [selectedTeamFilter, setSelectedTeamFilter] =
     useState<string>("All Teams");
 
+  // How the last load of the table was served (server cache HIT/MISS/STALE, or a failure) — shown as
+  // a chip in the header so a stale or failed refresh is never silent.
+  const [rowsSync, setRowsSync] = useState<RowsSyncInfo | null>(null);
+  const [isRefreshingNow, setIsRefreshingNow] = useState<boolean>(false);
+
   // Initial database load
   useEffect(() => {
     async function loadData() {
@@ -331,6 +361,7 @@ export default function Home() {
 
         // Fetch rows, columns and audit logs
         const rawRows = await getAllRows(currentRole);
+        setRowsSync(getLastRowsSync());
         const loadedRows = rawRows;
         const loadedCols = await getColumns();
 
@@ -350,10 +381,12 @@ export default function Home() {
     loadData();
   }, [currentRole]);
 
-  // Helper to re-fetch all rows from the database (used after publish + periodic polling)
-  const refreshRows = async () => {
+  // Helper to re-fetch all rows from the database (used after publish + periodic polling).
+  // `fresh` = bypass the server's cache and read the database (the header's "Refresh now").
+  const loadRowsIntoState = async (fresh: boolean) => {
     try {
-      const rawRows = await getAllRows(currentRole);
+      const rawRows = await getAllRows(currentRole, { fresh });
+      setRowsSync(getLastRowsSync());
       // An import (or its pre-import backup + post-import re-fetch) can take well over 15
       // seconds against a large database — long enough for this poll to fire mid-import, or for
       // a poll request already in flight to resolve AFTER the import's own, more current, result
@@ -365,17 +398,40 @@ export default function Home() {
       // request that started just before the import began but resolves mid-import is still
       // caught.
       if (isImportSyncingRef.current) return;
-      setRows(rawRows);
+      // getAllRows() swallows every failure (network error, Supabase 402 after the quota, server
+      // down) and returns [] — indistinguishable from a genuinely empty table. Never let a failed
+      // background refresh blank the table the planner is looking at.
+      setRows((prev) => (rawRows.length === 0 && prev.length > 0 ? prev : rawRows));
     } catch (err) {
       // Use console.warn instead of console.error to avoid Next.js full-screen error overlays for background network polling issues
       console.warn("Error refreshing rows:", err);
     }
   };
+  const refreshRows = () => loadRowsIntoState(false);
+  const refreshRowsFresh = async () => {
+    setIsRefreshingNow(true);
+    try {
+      await loadRowsIntoState(true);
+    } finally {
+      setIsRefreshingNow(false);
+    }
+  };
 
-  // Planner: auto-poll every 15 seconds to pick up newly published rows from all teams
+  // Planner: auto-poll every 15 seconds to pick up newly published rows from all teams.
+  // Skipped while the tab is hidden (nobody is looking at it — a forgotten background tab used to
+  // keep pulling the whole table all night); catches up the moment the tab is shown again. The
+  // server serves these polls from an in-memory cache (server/db.js), so a visible poll no longer
+  // costs Supabase egress either.
   useEffect(() => {
     if (currentRole !== "Planner") return;
-    const interval = setInterval(refreshRows, 15000);
+    const interval = setInterval(() => {
+      if (document.hidden) return;
+      refreshRows();
+    }, 15000);
+    const onVisible = () => {
+      if (!document.hidden) refreshRows();
+    };
+    document.addEventListener("visibilitychange", onVisible);
 
     // Also do an immediate refresh when switching to Planner role
     // Wrap in async function to avoid synchronous setState warning in effect
@@ -384,7 +440,10 @@ export default function Home() {
     };
     initRefresh();
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRole]);
 
@@ -403,7 +462,8 @@ export default function Home() {
       const c34 = String(r.col34 || '').toLowerCase();
       if (!c22.includes('c+p') && !c34.includes('c+p')) return null;
       const hasApproved = c22.includes('approved') || c34.includes('approved');
-      return hasApproved ? 'Approved' : 'C+P';
+      // Final strike-off actually sent (2nd DHL marked "Final Reference") -> approved.
+      return hasApproved || hasFinalReferenceSecondDhl(r) ? 'Approved' : 'C+P';
     };
 
     const cpRows = rows.filter(r => {
@@ -513,6 +573,17 @@ export default function Home() {
         r = { ...r, col11: recoveredPlant } as EmbellishmentRow;
       }
 
+      // PLANNING-EVENT RULE (2026-09-27): an existing plan is only ever changed or cleared by a
+      // MANUAL action (Delete / Clear / move / replan / plant change in Edit) — never by this
+      // load-time heal. So a row that already has ANY planning event is left exactly as it is
+      // (the server refuses non-manual clears anyway, see server/planningEvents.js; re-timing
+      // here would only add duplicate dates next to the kept ones). Only a row with no plan at
+      // all gets auto-planned below.
+      const hasAnyPlanningEvent = Object.keys(r).some(
+        (k) => /^\d{4}-\d{2}-\d{2}(_.+)?$/.test(k) && String(r[k] ?? "").trim() !== "",
+      );
+      if (hasAnyPlanningEvent) return;
+
       // STRICT: a row is only eligible for planning events when it has BOTH a real Plant and a
       // real S-Off Requirement (hasCompleteAllocationContext). Process / Plant Flow / App Form /
       // AWR / an existing FR-or-NY pass-fail date are NOT substitutes — no S-Off Requirement means
@@ -551,7 +622,6 @@ export default function Home() {
       const hasFS = existingDateValues.some((v) => v.includes("FS"));
       const hasFR = existingDateValues.some((v) => v.includes("FR"));
       const hasPPS = existingDateValues.some((v) => v.includes("PPS"));
-      const hasNY = existingDateValues.some((v) => v.includes("NY"));
       const hasDuplicateFR = existingDateValues.filter((v) => v.includes("FR")).length > 1;
 
       const hasDyePills = existingDateValues.some((v) => v.includes("PPSDS") || v.includes("RDPS"));
@@ -659,7 +729,7 @@ export default function Home() {
         hasFailedEvent ||
         hasNoScheduleAtAll ||
         ((hasFR || r.col14) &&
-          (!hasPPS || !hasNY || hasDuplicateFR || !hasFS || hasInvalidDyePills || hasInvalidCutPanelPills))
+          (!hasPPS || hasDuplicateFR || !hasFS || hasInvalidDyePills || hasInvalidCutPanelPills))
       ) {
         needsUpdate = true;
         const scheduled = autoScheduleEmbellishmentRow(r);
@@ -794,6 +864,83 @@ export default function Home() {
           (k) => /^\d{4}-\d{2}-\d{2}(_.+)?$/.test(k) && normalizeStr(originalRow[k]) !== "",
         );
 
+        // PLANT CHANGED IN EDIT (e.g. ANTLER -> LEEMA / REGAL IMAGE) = a new plant = a new plan.
+        // This is the ONE case where an existing plan is cleared automatically: every event is
+        // cleared (soft — kept in planning_events history) and the item is replanned fresh for the
+        // new plant from today. NOT a plant swap, so the plan is kept exactly as it is:
+        //   * Plant blanked            -> something broke; the events stay (and still show)
+        //   * blank -> a plant         -> a repair, not a new plant
+        //   * a leg added / removed    -> cross-dev (ANTLER -> ANTLER/LEEMA): the first plant's plan
+        //                                 stays; the new leg is planned from a picked date
+        //   * same plant, other spelling / alias (HI EMB vs CKT)
+        // (Line breaks folded to spaces first: a chart cell like "Brandix<line break>emb" must read as one
+        // plant, not "BRANDIX" + "EMB".)
+        const plantSetOf = (v: unknown) => new Set(extractPlants(String(v ?? "").replace(/\s+/g, " ")));
+        const oldPlants = plantSetOf(originalRow.col11);
+        const newPlants = plantSetOf(updatedRow.col11);
+        const isPlantSwap =
+          hasExistingPlan &&
+          oldPlants.size > 0 &&
+          newPlants.size > 0 &&
+          ![...oldPlants].every((p) => newPlants.has(p)) &&
+          ![...newPlants].every((p) => oldPlants.has(p));
+
+        if (isPlantSwap) {
+          const fromPlant = normalizeStr(originalRow.col11);
+          const toPlant = normalizeStr(updatedRow.col11);
+          const now = new Date();
+          const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+          if (
+            !window.confirm(
+              `Plant changed: ${fromPlant} -> ${toPlant}.\n\n` +
+                `A new plant needs a new plan: all current planning events on this item will be cleared ` +
+                `and it will be replanned for ${toPlant} starting ${todayKey}.\n` +
+                `(The cleared events are kept in the planning history.)\n\nContinue?`,
+            )
+          ) {
+            return; // nothing saved — the plant edit is cancelled too
+          }
+          const cleared: Record<string, unknown> = {
+            ...originalRow,
+            ...updatedRow,
+            id: originalRow.id,
+            shared_id: originalRow.shared_id || originalRow.id,
+            version_number: Number(originalRow.version_number) || 1,
+            is_current: true,
+          };
+          Object.keys(cleared).forEach((k) => {
+            if (isPlanningEventKey(k)) cleared[k] = "";
+          });
+          const replanned = autoScheduleEmbellishmentRow({ ...cleared }, undefined, todayKey) as EmbellishmentRow;
+          const producedDates = Object.keys(replanned).some(
+            (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && String(replanned[k] ?? "").trim() !== "",
+          );
+          const outRow = (producedDates ? replanned : cleared) as EmbellishmentRow;
+          await saveRow(withEventClears(outRow, originalRow));
+          setRows((prev) => prev.map((r) => (r.id === originalRow.id ? outRow : r)));
+
+          const logEntry: AuditLog = {
+            id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            timestamp: new Date().toISOString(),
+            styleCode: String(originalRow.col5 || "N/A"),
+            field: "System Row Operations",
+            oldValue: `Plan for ${fromPlant}`,
+            newValue: producedDates
+              ? `Plant changed to ${toPlant} — plan cleared and replanned from ${todayKey}`
+              : `Plant changed to ${toPlant} — plan cleared (not replanned: needs Plant + S-Off Requirement)`,
+            userRole: currentRole,
+          };
+          await saveAuditLog(logEntry);
+          setAuditLogs((prev) => [logEntry, ...prev]);
+          if (!producedDates) {
+            alert(
+              "The old plan was cleared, but a new one couldn't be built yet — the item needs both a " +
+                "Plant and an S-Off Requirement. Fill them in, then replan.",
+            );
+          }
+          return;
+        }
+
         if (isPlanningChange && !hasExistingPlan) {
           if (isOriginalFullyComplete) {
             // Changes impact auto-planning AND previously complete -> Soft-archive old version & create new version
@@ -858,7 +1005,7 @@ export default function Home() {
               is_current: true,
             };
             const updatedInPlaceRow = autoScheduleEmbellishmentRow(updatedInPlaceRowBase);
-            await saveRow(updatedInPlaceRow);
+            await saveRow(withEventClears(updatedInPlaceRow, originalRow));
             setRows((prev) => {
               return prev.map((r) => (r.id === originalRow.id ? updatedInPlaceRow : r));
             });
@@ -868,12 +1015,24 @@ export default function Home() {
           const aoqChanged = normalizeStr(originalRow.col20) !== normalizeStr(updatedRow.col20);
 
           if (aoqChanged) {
+            // Fans an AOQ edit out to every OTHER row sharing this same Trigger — "KNIT" recurs
+            // every season with its own real deadline (SU27's KNIT AOQ isn't SP27's), so the key
+            // must include Category + Season, not just the Trigger text. Without this, editing
+            // AOQ on one season's "KNIT" row silently overwrote every other season's "KNIT" rows
+            // too (confirmed: a SU27 row was showing SP27's AOQ date because of exactly this).
             const getDropKey = (r: EmbellishmentRow): string => {
               const col2Val = String(r.col2 || "").trim();
-              if (col2Val && col2Val.toUpperCase() !== "N/A") return col2Val.toUpperCase();
-              const col4Val = String(r.col4 || "").trim();
-              const match = col4Val.match(/(\d{1,2}\.\d{1,2}(?:\/\d{1,2}\.\d{1,2})?\s*(?:DROP)?)/i);
-              return match ? match[1].trim().toUpperCase() : col4Val.toUpperCase();
+              let triggerPart: string;
+              if (col2Val && col2Val.toUpperCase() !== "N/A") {
+                triggerPart = col2Val.toUpperCase();
+              } else {
+                const col4Val = String(r.col4 || "").trim();
+                const match = col4Val.match(/(\d{1,2}\.\d{1,2}(?:\/\d{1,2}\.\d{1,2})?\s*(?:DROP)?)/i);
+                triggerPart = match ? match[1].trim().toUpperCase() : col4Val.toUpperCase();
+              }
+              const category = String(r.col3 || "").trim().toUpperCase();
+              const season = seasonBase(r.col4);
+              return `${triggerPart}|||${category}|||${season}`;
             };
 
             const targetDrop = getDropKey(originalRow);
@@ -908,7 +1067,9 @@ export default function Home() {
             is_current: true,
           };
 
-          await saveRow(updatedInPlaceRow);
+          // A manual edit (drag/move, Event Status panel, pass/fail, edit modal) — the events it
+          // blanks are the user's own clears, so name them for the server's event guard.
+          await saveRow(withEventClears(updatedInPlaceRow, originalRow));
 
           setRows((prev) => {
             return prev.map((r) => (r.id === originalRow.id ? updatedInPlaceRow : r));
@@ -1108,6 +1269,92 @@ export default function Home() {
   // check entirely and always versions + reschedules, exactly like the Ground-color-changed path
   // does, but explicitly starting from today (not "next working day fallback") since a C+P/
   // Resubmit replan is meant to restart right away.
+  // "New Version": the item is being re-developed with a different Application Form / Fabric /
+  // Plant after it was already planned and submitted. The current row is archived EXACTLY as it is
+  // (every planning event, plant and submission detail kept — visible in Revision History and still
+  // counted for its plant in Plant Performance), and version N+1 starts from the edited fields with
+  // a fresh plan from the chosen start date. Unlike Replan (handleForceReplan), the planner edits
+  // the development fields first, picks the start date, and can reset submission tracking.
+  const TRACKING_KEYS_FOR_NEW_VERSION = [
+    "col22", "col24", "col34", "col35", "col40", "col41", "col42",
+    "awb1", "awb2", "awb1Date", "awb2Date", "dropDate",
+  ];
+  const handleCreateNewVersion = async (originalRow: EmbellishmentRow, input: NewVersionInput) => {
+    try {
+      const archivedOldRow: EmbellishmentRow = { ...originalRow, is_current: false };
+
+      const base: EmbellishmentRow = { ...originalRow };
+      Object.keys(base).forEach((k) => {
+        if (/^\d{4}-\d{2}-\d{2}(_.*)?$/.test(k) || k.startsWith("_leg_")) {
+          (base as Record<string, unknown>)[k] = "";
+        }
+      });
+      if (input.clearTracking) {
+        TRACKING_KEYS_FOR_NEW_VERSION.forEach((k) => {
+          if (k in base) (base as Record<string, unknown>)[k] = "";
+        });
+        Object.keys(base).forEach((k) => {
+          if (k.startsWith("nycv:")) (base as Record<string, unknown>)[k] = "";
+        });
+        // col20 doubles as the AOQ date — only clear it when it holds an approval VERDICT.
+        if (/approv|reject|resubmit|c\s*\+\s*p|drop|hold/i.test(String(base.col20 || ""))) base.col20 = "";
+      }
+
+      const newVersionBase: EmbellishmentRow = {
+        ...base,
+        col15: input.col15.trim(),
+        col27: input.col27.trim(),
+        col13: input.col13.trim(),
+        col11: input.col11.trim(),
+        col12: input.col12.trim(),
+        id: `row_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        shared_id: originalRow.shared_id || originalRow.id,
+        version_number: (Number(originalRow.version_number) || 1) + 1,
+        is_current: true,
+        change_reason: input.reason.trim(),
+        changed_date: new Date().toISOString(),
+      };
+
+      const newVersion = autoScheduleEmbellishmentRow(
+        newVersionBase,
+        undefined,
+        input.startDate,
+      ) as EmbellishmentRow;
+      const producedDates = Object.keys(newVersion).some(
+        (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && String((newVersion as Record<string, unknown>)[k] || "").trim(),
+      );
+      if (!producedDates) {
+        alert(
+          "Can't build a plan for the new version — it needs both a Plant and an S-Off Requirement. " +
+          "Fill those in and try again. Nothing was changed.",
+        );
+        return;
+      }
+      newVersion.col47 = derivePlanStatus(newVersion as unknown as Record<string, unknown>);
+
+      const logEntry: AuditLog = {
+        id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+        timestamp: new Date().toISOString(),
+        styleCode: String(originalRow.col5 || "N/A"),
+        field: "System Row Operations",
+        oldValue: `v${Number(originalRow.version_number) || 1} archived (App Form: ${originalRow.col15 || "-"}, Fabric: ${originalRow.col13 || "-"})`,
+        newValue: `v${newVersion.version_number} planned from ${input.startDate} (App Form: ${newVersion.col15 || "-"}, Fabric: ${newVersion.col13 || "-"}) — ${input.reason.trim()}`,
+        userRole: currentRole,
+      };
+
+      await saveMultipleRows([archivedOldRow, newVersion]);
+      await saveAuditLog(logEntry);
+
+      setRows((prev) => prev.filter((r) => r.id !== originalRow.id).concat(newVersion));
+      setArchivedRows((prev) => [...prev.filter((r) => r.id !== originalRow.id), archivedOldRow]);
+      setAuditLogs((prev) => [logEntry, ...prev]);
+      setNewVersionRow(null);
+    } catch (err) {
+      console.error("Error creating new version:", err);
+      alert("Failed to create the new version. Nothing was changed.");
+    }
+  };
+
   const handleForceReplan = async (rowId: string) => {
     try {
       const originalRow = rows.find((r) => r.id === rowId);
@@ -1295,7 +1542,7 @@ export default function Home() {
         });
       }
 
-      await saveRow(clearedRow);
+      await saveRow(withEventClears(clearedRow, originalRow));
       setRows((prev) => prev.map((r) => (r.id === rowId ? clearedRow : r)));
 
       const logEntry: AuditLog = {
@@ -1467,7 +1714,7 @@ export default function Home() {
         outRow = scheduledRow;
       }
 
-      await saveRow(outRow);
+      await saveRow(withEventClears(outRow, originalRow));
       setRows((prev) => prev.map((r) => (r.id === rowId ? outRow : r)));
 
       const logEntry: AuditLog = {
@@ -1525,9 +1772,9 @@ export default function Home() {
         shared_id: rowId,
         version_number: 1,
         is_current: true,
-        // Marks this as a hand-created row. Tracking-chart / Excel imports deliberately never
-        // merge into a manual row even when the graphic matches — they insert their own separate
-        // row instead, so the planner keeps both (see claimedDbIds seeding in processImportFile).
+        // Marks this as a hand-created row. Tracking-chart / Excel imports only merge into a
+        // manual row as a last resort — when no imported row matches (see isManualRow in
+        // processImportFile).
         manual_entry: "1",
       };
       for (let i = 1; i <= 35; i++) {
@@ -1762,6 +2009,10 @@ export default function Home() {
   // buttons, only these flags differ. ckCategoryOverride, when given, is the exact CK category
   // ("CKNA Men's" / "CKNA Women's" / "CKP" / "Other Knit") the sync already resolved from the file
   // name; otherwise a CK import derives it from the file name itself, falling back to bare "CK".
+  // A tracking-chart DHL date turns the row's planned NY green only when it's within this many
+  // calendar days of that planned NY (planned 9/28: DHL 9/25 or 9/30 -> green; DHL 9/9 -> not).
+  const DHL_NY_MATCH_MAX_DAYS = 5;
+
   const handleImportExcel = (
     e: React.ChangeEvent<HTMLInputElement>,
     isPlanningSheetImport = false,
@@ -2720,15 +2971,15 @@ export default function Home() {
         const seenFileNewKeysMap = new Map<string, string>();
         const claimedDbIds = new Set<string>();
 
-        // Hand-created planning rows ("Add Planning Row", or a published team draft) are seeded as
-        // already-claimed so NO match strategy below can ever pick one as the existing row to merge
-        // into. A tracking chart / allocation chart almost always carries the same graphic as a row
-        // the planner already entered by hand; without this, the import silently merges onto that
-        // manual row, half-filling its columns instead of creating the separate tracked row the
-        // planner expects. Marked rows stay untouched and the imported item lands as its own new row.
-        rows.forEach((r) => {
-          if (String(r.manual_entry || "") === "1") claimedDbIds.add(r.id);
-        });
+        // Hand-created planning rows ("Add Planning Row", or a published team draft) are a
+        // LAST-RESORT match: every strategy below first runs against imported rows only, and only
+        // when none matches does it run again allowing manual rows. So an item that already has an
+        // imported twin keeps updating that twin (manual row left alone), but an item that exists
+        // ONLY as a hand-added row merges into it instead of being created as a new duplicate —
+        // per the planner (2026-09-24): "if it's hand added but matching the tracking chart, no
+        // need to import them as new". (Before, manual rows were never matched at all, so deleting
+        // the imported twin made every re-import recreate it.)
+        const isManualRow = (r: EmbellishmentRow) => String(r.manual_entry || "") === "1";
 
         // ── Everything below is row-INVARIANT (same for all rows in the file) ──
         // Previously these were declared inside the rawData.map() callback, which
@@ -3014,9 +3265,15 @@ export default function Home() {
               }
             }
 
-            // Strike-Off AWB tracking details: 2nd submission wins over 1st submission
+            // Strike-Off AWB tracking details: 2nd submission wins over 1st submission for col24
+            // (the single "current" tracking value everything else reads), but the 1st and 2nd are
+            // ALSO kept separately in awb1/awb2 (non-col* keys persist via the schedule JSONB, same
+            // as "nycv:<date>" keys) so Summary of Graphics can show both S/Off dates side by side
+            // instead of just whichever one last overwrote col24.
             const awb2 = String(row["__awb2"] || "").trim();
             const awb1 = String(row["__awb1"] || "").trim();
+            if (awb1) formattedRow["awb1"] = awb1;
+            if (awb2) formattedRow["awb2"] = awb2;
             const latestAwb = awb2 || awb1;
             if (latestAwb) {
               formattedRow["col24"] = latestAwb;
@@ -3121,6 +3378,11 @@ export default function Home() {
             const dhlTrackingStr = String(formattedRow["col24"] || "");
 
             // 1. Process DHL tracking -> NY
+            // The DHL-date NY is only a FALLBACK for rows with no NY of their own: when the matched
+            // DB row already has a planned NY, the merge below turns THAT one green instead and
+            // drops this key (see dhlNyKey there).
+            let dhlNyKey = "";
+            let fabricFrKey = ""; // FR derived from the fabric-in date below (same fallback idea)
             if (dhlTrackingStr) {
               // Look for patterns like "DHL 7/16" or "AWB: 07/16"
               const dhlMatch = dhlTrackingStr.match(/(?:DHL|AWB|DTC|LTD)[-\s:]*(\d{1,2})\/(\d{1,2})/i);
@@ -3132,6 +3394,7 @@ export default function Home() {
                 
                 // Set to NY because it was sent
                 formattedRow[dhlDateKey] = "NY";
+                dhlNyKey = dhlDateKey;
               }
             }
 
@@ -3168,6 +3431,7 @@ export default function Home() {
                 // Set Fabric Received (FR - Default Planned) on fabric arrival date if empty
                 if (!formattedRow[fabISO]) {
                   formattedRow[fabISO] = "FR";
+                  fabricFrKey = fabISO;
                 }
               }
             }
@@ -3590,6 +3854,24 @@ export default function Home() {
               );
             };
 
+            // BRANDING rows (Graphic Type col19, on either side — the Graphic Development file has
+            // no Graphic Type column, so usually it's the DB row that says so): one Style + Graphic
+            // + Combo is developed on several body colours, each its own row ("VV-14744" / 10343599
+            // / C1 on Pink Cocktail AND on Cheetah). Without Ground in the identity, each file row
+            // grabbed whichever same-Style/Graphic/Combo row was still unclaimed and overwrote its
+            // Ground. Blank-tolerant, and loose on purpose — grounds are written with and without
+            // colour codes / prefixes ("VS Med Htr Grey" vs "VS Med Htr Grey 1NG0"), so it's a match
+            // when one compacted value contains the other. Non-branding rows are unaffected.
+            const compactGround = (v: unknown) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+            const incomingGroundKey = compactGround(formattedRow["col8"]);
+            const incomingIsBranding = /branding/i.test(String(formattedRow["col19"] || ""));
+            const groundCompatible = (r: EmbellishmentRow) => {
+              if (!incomingIsBranding && !/branding/i.test(String(r.col19 || ""))) return true;
+              const dbGroundKey = compactGround(r.col8);
+              if (!incomingGroundKey || !dbGroundKey) return true;
+              return dbGroundKey.includes(incomingGroundKey) || incomingGroundKey.includes(dbGroundKey);
+            };
+
             // Same blank-tolerant guard, for Fabric Reference (col13). A single embellishment item
             // routinely names more than one fabric — a body fabric plus an applique/lace fabric
             // ("FB # 22693, LC # 09947") — and different source sheets list a different subset or a
@@ -3602,7 +3884,19 @@ export default function Home() {
             const fabricNumsOf = (v: string): Set<string> =>
               new Set((String(v || "").match(/\d{3,7}/g) || []));
             const incomingFabricNums = fabricNumsOf(incomingFabricRef);
+            // VS and PINK (VS AE, VS-SLEEP, PINK, PINK-SLEEP, ...) ignore Fabric Reference when
+            // matching, per the planner: the same Graphic + Combo + Style + Category + Season is
+            // the same item whatever FB number a given chart wrote. Confirmed against real data:
+            // the VS AE SU27 Graphic Chart wrote "FB25251" for GVU27-247 / -249 / -251 where the
+            // rows already in the database held "FB25152", so the number check turned every one
+            // of them into a brand-new duplicate on re-import (and left the DHL number on the twin,
+            // so the original still counted as "Submission Pending"). Judged on either side's
+            // category so a blank-category file row still matches a VS/PINK database row. The
+            // fabric ref itself is still unioned on apply below, so neither number is lost.
+            const isVsOrPinkCategory = (v: unknown): boolean =>
+              /^(VS|PINK)/.test(String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, ""));
             const fabricCompatible = (r: EmbellishmentRow) => {
+              if (isVsOrPinkCategory(incomingCategory) || isVsOrPinkCategory(r.col3)) return true;
               if (!incomingFabricNums.size) return true;
               const dbNums = fabricNumsOf(normalize(r.col13 || ""));
               if (!dbNums.size) return true;
@@ -3796,89 +4090,102 @@ export default function Home() {
             // colorways here. seasonCategoryCompatible below still enforces that a CKNA Men's row
             // only matches CKNA Men's / legacy-CK rows for the same season — never CKNA Women's,
             // never a different season, even though those can share a Graphic+Ground.
-            if (
-              incomingGraphic &&
-              incomingGround &&
-              (Boolean(data.ckCategory) || isCkFamilyCategory(incomingCategory))
-            ) {
-              const stripWs = (v: string) => v.replace(/\s+/g, "");
-              const incomingGroundCompact = stripWs(incomingGround);
-              const matches = rows.filter(
-                (r) =>
-                  !claimedDbIds.has(r.id) &&
-                  normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
-                  stripWs(normalize(String(String(String(String(r.col8 || "")))))) === incomingGroundCompact &&
-                  seasonCategoryCompatible(r) &&
-                  categoryLineCompatible(r)
-              );
-              if (matches.length >= 1) {
-                existingMatch = matches[0];
-                matchedFromDb = true;
-              }
-            }
-
-            // Strategy 1: Exact match on Graphic + Combo (Normalized) + Style
-            if (!existingMatch && incomingGraphic && !ckGraphicOnlyIdentity) {
-              const matches = rows.filter(
-                (r) =>
-                  !claimedDbIds.has(r.id) &&
-                  normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
-                  normalizeCombo(String(String(String(String(r.col6 || ""))))) === incomingCombo &&
-                  styleMatches(r.col5) &&
-                  seasonCategoryCompatible(r) &&
-                  fabricCompatible(r) &&
-                  categoryLineCompatible(r)
-              );
-              if (matches.length >= 1) {
-                existingMatch = matches[0];
-                matchedFromDb = true;
-              }
-            }
-
-            // Strategy 1b: Match on Style + Graphic Number (e.g. 527) + Combo
-            if (!existingMatch && incomingGraphicNum && !ckGraphicOnlyIdentity) {
-              const matches = rows.filter(
-                (r) =>
-                  !claimedDbIds.has(r.id) &&
-                  styleMatches(r.col5) &&
-                  normalizeCombo(String(String(String(String(r.col6 || ""))))) === incomingCombo &&
-                  extractGraphicNum(normalize(String(String(String(String(r.col7 || "")))))) === incomingGraphicNum &&
-                  seasonCategoryCompatible(r) &&
-                  fabricCompatible(r) &&
-                  categoryLineCompatible(r)
-              );
-              if (matches.length >= 1) {
-                existingMatch = matches[0];
-                matchedFromDb = true;
-              }
-            }
-
-
-
-            // Strategy 4: VS Excel format — Combo ends with the short suffix
-            if (
-              !existingMatch &&
-              incomingGraphic &&
-              incomingCombo &&
-              !incomingCombo.includes("-") &&
-              !ckGraphicOnlyIdentity
-            ) {
-              const matches = rows.filter((r) => {
-                const dbCombo = normalizeCombo(String(String(String(String(r.col6 || "")))));
-                const dbComboSuffix = dbCombo.split(/[-\s]/).pop() || "";
-                return (
-                  !claimedDbIds.has(r.id) &&
-                  normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
-                  styleMatches(r.col5) &&
-                  dbComboSuffix === incomingCombo &&
-                  seasonCategoryCompatible(r) &&
-                  fabricCompatible(r) &&
-                  categoryLineCompatible(r)
+            // Pass 1: imported rows only. Pass 2 (only if pass 1 found nothing): hand-added rows
+            // too — see isManualRow above.
+            for (const allowManual of [false, true]) {
+              if (existingMatch) break;
+              if (
+                !existingMatch &&
+                incomingGraphic &&
+                incomingGround &&
+                (Boolean(data.ckCategory) || isCkFamilyCategory(incomingCategory))
+              ) {
+                const stripWs = (v: string) => v.replace(/\s+/g, "");
+                const incomingGroundCompact = stripWs(incomingGround);
+                const matches = rows.filter(
+                  (r) =>
+                    !claimedDbIds.has(r.id) &&
+                    (allowManual || !isManualRow(r)) &&
+                    normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
+                    stripWs(normalize(String(String(String(String(r.col8 || "")))))) === incomingGroundCompact &&
+                    seasonCategoryCompatible(r) &&
+                    categoryLineCompatible(r)
                 );
-              });
-              if (matches.length >= 1) {
-                existingMatch = matches[0];
-                matchedFromDb = true;
+                if (matches.length >= 1) {
+                  existingMatch = matches[0];
+                  matchedFromDb = true;
+                }
+              }
+
+              // Strategy 1: Exact match on Graphic + Combo (Normalized) + Style
+              if (!existingMatch && incomingGraphic && !ckGraphicOnlyIdentity) {
+                const matches = rows.filter(
+                  (r) =>
+                    !claimedDbIds.has(r.id) &&
+                    (allowManual || !isManualRow(r)) &&
+                    normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
+                    normalizeCombo(String(String(String(String(r.col6 || ""))))) === incomingCombo &&
+                    styleMatches(r.col5) &&
+                    seasonCategoryCompatible(r) &&
+                    fabricCompatible(r) &&
+                    groundCompatible(r) &&
+                    categoryLineCompatible(r)
+                );
+                if (matches.length >= 1) {
+                  existingMatch = matches[0];
+                  matchedFromDb = true;
+                }
+              }
+
+              // Strategy 1b: Match on Style + Graphic Number (e.g. 527) + Combo
+              if (!existingMatch && incomingGraphicNum && !ckGraphicOnlyIdentity) {
+                const matches = rows.filter(
+                  (r) =>
+                    !claimedDbIds.has(r.id) &&
+                    (allowManual || !isManualRow(r)) &&
+                    styleMatches(r.col5) &&
+                    normalizeCombo(String(String(String(String(r.col6 || ""))))) === incomingCombo &&
+                    extractGraphicNum(normalize(String(String(String(String(r.col7 || "")))))) === incomingGraphicNum &&
+                    seasonCategoryCompatible(r) &&
+                    fabricCompatible(r) &&
+                    groundCompatible(r) &&
+                    categoryLineCompatible(r)
+                );
+                if (matches.length >= 1) {
+                  existingMatch = matches[0];
+                  matchedFromDb = true;
+                }
+              }
+
+
+
+              // Strategy 4: VS Excel format — Combo ends with the short suffix
+              if (
+                !existingMatch &&
+                incomingGraphic &&
+                incomingCombo &&
+                !incomingCombo.includes("-") &&
+                !ckGraphicOnlyIdentity
+              ) {
+                const matches = rows.filter((r) => {
+                  const dbCombo = normalizeCombo(String(String(String(String(r.col6 || "")))));
+                  const dbComboSuffix = dbCombo.split(/[-\s]/).pop() || "";
+                  return (
+                    !claimedDbIds.has(r.id) &&
+                    (allowManual || !isManualRow(r)) &&
+                    normalize(String(String(String(String(r.col7 || ""))))) === incomingGraphic &&
+                    styleMatches(r.col5) &&
+                    dbComboSuffix === incomingCombo &&
+                    seasonCategoryCompatible(r) &&
+                    fabricCompatible(r) &&
+                    groundCompatible(r) &&
+                    categoryLineCompatible(r)
+                  );
+                });
+                if (matches.length >= 1) {
+                  existingMatch = matches[0];
+                  matchedFromDb = true;
+                }
               }
             }
 
@@ -3948,7 +4255,11 @@ export default function Home() {
             }
 
             if (existingMatch) {
-              matchType = "style"; // Matched exact existing record in DB
+              // Only a real DATABASE match is an update. existingMatch can also be the new row an
+              // EARLIER line of this same file created (intra-file compKey above) — a duplicate line
+              // in the file (INQ15: 10350350 / C1 / VV 14744 / Cheetah on lines 9 and 14). That item
+              // doesn't exist yet, so it's still "new" (both lines save into one new row).
+              if (matchedFromDb) matchType = "style"; // Matched exact existing record in DB
               claimedDbIds.add(existingMatch.id);
             }
 
@@ -4056,9 +4367,54 @@ export default function Home() {
               }
             }
 
+            // Sent to NY (DHL on the chart) and the matched row already has an NY in its plan: mark
+            // the row's OWN planned NY green (per plan: the bare plan and every per-leg
+            // "<date>_<PLANT>" plan) instead of stamping a new NY on the DHL date. The DHL-date key
+            // used to also count as an "incoming date" below, which wiped the whole existing plan
+            // and left just NY|P on the DHL date (GVF27-014, 9/18) — every later event lost.
+            //
+            // Both chart-DERIVED dates (DHL -> NY, fabric-in -> FR) are only for rows with no plan
+            // yet: on a row that already has events they're dropped here, so they never count as
+            // "incoming dates" and never trigger the wipe below.
+            const nyPassKeys: string[] = [];
+            if (existingMatchHasEvents && fabricFrKey && formattedRow[fabricFrKey] === "FR") {
+              delete formattedRow[fabricFrKey];
+            }
+            if (existingMatch && dhlNyKey) {
+              const nyGroups = new Map<string, string[]>(); // "" = bare plan, else leg suffix
+              Object.entries(existingMatch).forEach(([k, v]) => {
+                const m = k.match(/^(\d{4}-\d{2}-\d{2})(_.+)?$/);
+                if (!m || typeof v !== "string" || !v.trim()) return;
+                if (parseEventValue(v)?.code.toUpperCase() !== "NY") return;
+                const g = m[2] || "";
+                nyGroups.set(g, [...(nyGroups.get(g) || []), k]);
+              });
+              if (nyGroups.size > 0) {
+                delete formattedRow[dhlNyKey];
+                const dhlTime = Date.parse(dhlNyKey);
+                nyGroups.forEach((keys) => {
+                  const planned = keys.filter(
+                    (k) => parseEventValue(String(existingMatch![k]))?.status === "planned",
+                  );
+                  if (planned.length === 0) return; // this plan's NY already has a verdict
+                  const nearest = planned.reduce((a, b) =>
+                    Math.abs(Date.parse(b.slice(0, 10)) - dhlTime) < Math.abs(Date.parse(a.slice(0, 10)) - dhlTime) ? b : a,
+                  );
+                  // Only a DHL sent CLOSE to the planned NY is that NY happening. A DHL weeks away is
+                  // a different submission (e.g. DHL 9/9 for the layout strike-off vs an NY planned
+                  // 9/28 for the colour-approval round) — that planned NY must stay open, not green.
+                  const gapDays = Math.abs(Date.parse(nearest.slice(0, 10)) - dhlTime) / 86_400_000;
+                  if (gapDays > DHL_NY_MATCH_MAX_DAYS) return;
+                  nyPassKeys.push(nearest); // applied after the merge below
+                });
+              }
+            }
+
             // If fresh Excel import provides date keys for this row, clear legacy auto-scheduled date keys from existingMatch
+            // The DHL-date NY fallback (row has a plan but no NY in it) is added, never a reason to
+            // wipe that plan.
             const hasIncomingDates = Object.keys(formattedRow).some((k) =>
-              k.match(/^\d{4}-\d{2}-\d{2}$/) && formattedRow[k]
+              k.match(/^\d{4}-\d{2}-\d{2}$/) && formattedRow[k] && k !== dhlNyKey
             );
             // A Planning Sheet import is purely additive — never wipe dates the database already
             // has just because this particular row/file doesn't happen to also cover them (e.g.
@@ -4132,6 +4488,10 @@ export default function Home() {
                   mergedRow[k] = v;
                 }
               }
+            });
+
+            nyPassKeys.forEach((k) => {
+              (mergedRow as Record<string, unknown>)[k] = encodeEventValue("NY", "pass");
             });
 
             // Fallback: the allocation chart sometimes leaves Plant (col11) blank on rows whose
@@ -4411,6 +4771,45 @@ export default function Home() {
               finalRow.col41 = hasColorApproval(finalRow) ? "Y" : "N";
             }
 
+            // Auto-derive Approved Date (col39) the same way, from the NY verdict just derived
+            // above — so a fresh import needs no separate "Sync Approved Dates" click on the
+            // Summary of Graphics page either. Only fires when col39 is blank, so an explicit
+            // Approve Date (already on the row, or supplied by this import file's own "Approve
+            // Date"/"Approval Date" column) always wins over a comment-derived guess. Also gated
+            // to getRowStatus === "approved": parseCommentVerdict skips any line that also
+            // mentions a drop, so a graphic approved and LATER dropped (a newer "...DROP" line
+            // appended above the older "...APPROVED LAYOUT/TECH/EX" one) would otherwise still
+            // get a stamped Approve Date despite col1/col20 already saying Dropped.
+            if (
+              !String(finalRow.col39 || "").trim() &&
+              getRowStatus(finalRow) === "approved"
+            ) {
+              const approvalVerdict = readNycVerdict(finalRow);
+              if (approvalVerdict?.kind === "A") {
+                finalRow.col39 = approvalVerdict.iso;
+              }
+            }
+
+            // Resolve the 1st/2nd S/Off Sent dates and the Drop date the same way, right here at
+            // import time, so Summary of Graphics reads them straight off the row instead of
+            // re-parsing awb1/awb2/comments on every page load. Computed on finalRow (post-merge)
+            // so year-disambiguation (nearestYearIso) sees the row's full accumulated schedule,
+            // not just this one sheet row. Never overwrites a value already resolved by an earlier
+            // import — only fills in what's still blank.
+            const importRefIso = rowRefIso(finalRow);
+            if (!String(finalRow.awb1Date || "").trim()) {
+              const iso = extractDateFromTrackingText(finalRow.awb1, importRefIso);
+              if (iso) finalRow.awb1Date = iso;
+            }
+            if (!String(finalRow.awb2Date || "").trim()) {
+              const iso = extractDateFromTrackingText(finalRow.awb2, importRefIso);
+              if (iso) finalRow.awb2Date = iso;
+            }
+            if (!String(finalRow.dropDate || "").trim() && getRowStatus(finalRow) === "dropped") {
+              const iso = extractDropDateIso(finalRow);
+              if (iso) finalRow.dropDate = iso;
+            }
+
             // A matched item whose Ground (fabric color), Fabric Reference, or Plant just got
             // REASSIGNED by this import — not filled in for the first time, an actual change from
             // one real value to a different real one — needs its plan redone from scratch, even if
@@ -4669,6 +5068,8 @@ export default function Home() {
                 bareInput,
                 undefined,
                 legStart,
+                "S",
+                { skipNyNyc: true },
               ) as Record<string, unknown>;
               // Clear any stale keys for this leg, then write the fresh plan under "<date>_<leg>".
               Object.keys(row).forEach((k) => {
@@ -4694,7 +5095,13 @@ export default function Home() {
           if (hasExistingEvents) return row as EmbellishmentRow;
 
           if (forceReplan || neededResolution) {
-            return autoScheduleEmbellishmentRow(row, undefined, planStart || undefined) as EmbellishmentRow;
+            return autoScheduleEmbellishmentRow(
+              row,
+              undefined,
+              planStart || undefined,
+              "S",
+              { skipNyNyc: true },
+            ) as EmbellishmentRow;
           }
           return row as EmbellishmentRow;
         });
@@ -4942,6 +5349,14 @@ export default function Home() {
       );
     }
 
+    // Apply Plant Dropdown Filter (standard dashboard only — like Category/Season above). Matches
+    // on the canonical plants in the Plant column (col11, or the Plant Flow chain when col11 is
+    // blank), so a cross-dev "ANTLER/LEEMA" row shows under both ANTLER and LEEMA, and aliases
+    // (CKT = HI EMB, AV1/AV2/BFFAV = AV …) collapse onto one entry.
+    if (selectedPlantFilter && viewMode !== "advanced") {
+      result = result.filter((row) => rowFilterPlants(row).includes(selectedPlantFilter));
+    }
+
     // Event-capsule triggers (Super Bowl, …) are hidden from EVERY default view — they're
     // planned/reported on their own, so a plain Category + Season view (standard or advanced)
     // must not fold them in on top of the regular seasonal flow. They reappear the moment their
@@ -4975,6 +5390,13 @@ export default function Home() {
       result = result.filter((row) => !isRowSent(row));
     }
 
+    // Apply Color Approval Filter — state is computed over ALL rows so a combo's colour sign-off
+    // on a row hidden by other filters still counts.
+    if (colorFilter !== "all") {
+      const byCombo = colorApprovalByCombo(rows);
+      result = result.filter((row) => byCombo.get(comboKeyOf(row)) === colorFilter);
+    }
+
     // Apply Status Filter (Bypass in Advanced Mode so the Sidebar Filters can handle status)
     if (viewMode !== "advanced") {
       if (selectedStatusFilter === "Active") {
@@ -4993,7 +5415,13 @@ export default function Home() {
       } else if (selectedStatusFilter === "C+P") {
         result = result.filter((row) => getRowStatus(row) === "c+p");
       } else if (selectedStatusFilter === "Pending") {
-        result = result.filter((row) => getRowStatus(row) === "pending");
+        // The actual submission pendings — same rule as the Submission Pending card: combos
+        // (Style|Graphic|Combo|Ground) whose strike-off hasn't gone to NY yet (no DHL / strike-off
+        // comment on any live row; CK on its SP code), Branding/Trial left out. One row per combo
+        // so the table count equals the card, not one line per trigger (KNIT + LOUNGE twins).
+        result = groupRowsByCombo(result.filter((r) => !isExcludedFromAdvancedAnalytics(r)))
+          .filter((g) => getGroupStatus(g) === "pending")
+          .map((g) => g.find((r) => getRowStatus(r) === "pending") ?? g[0]);
       } else if (selectedStatusFilter === "Resubmit") {
         result = result.filter((row) => getRowStatus(row) === "resubmit");
       }
@@ -5211,7 +5639,9 @@ export default function Home() {
     selectedStatusFilter,
     selectedPlanStatusFilter,
     selectedTriggerFilter,
+    selectedPlantFilter,
     dhlFilter,
+    colorFilter,
     slaFilter,
     searchQuery,
     currentRole,
@@ -5222,7 +5652,7 @@ export default function Home() {
   ]);
 
   // Same rows as displayedRows, but excluding archived (is_current: false) versions — for
-  // rollup/summary views (Advanced Analytics, Action Center, Plant Performance, Fabric Dispatch,
+  // rollup/summary views (Advanced Analytics, Action Center, Score Card, Fabric Dispatch,
   // Dashboard Stats, the SLA Watchlist bar, and the Due-Tomorrow alert) where an old version
   // replanned via handleForceReplan/handleUpdateRow would otherwise get double-counted alongside
   // its replacement — or, for the SLA/due-soon widgets specifically, wrongly surface an archived
@@ -5272,6 +5702,12 @@ export default function Home() {
     [rows],
   );
 
+  // Revision History needs every version of a graphic: the current rows plus the archived ones.
+  const historyRows = useMemo(() => {
+    const ids = new Set(rows.map((r) => r.id));
+    return [...rows, ...archivedRows.filter((r) => !ids.has(r.id))];
+  }, [rows, archivedRows]);
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const actionCenterCount = useMemo(() => {
     let count = 0;
@@ -5307,6 +5743,13 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-zinc-50 dark:bg-[#09090b] font-sans text-zinc-900 dark:text-zinc-150 overflow-hidden">
+      {newVersionRow && (
+        <NewVersionModal
+          row={newVersionRow}
+          onCancel={() => setNewVersionRow(null)}
+          onConfirm={(input) => handleCreateNewVersion(newVersionRow, input)}
+        />
+      )}
       <GlobalSidebar
         currentView={viewMode}
         setViewMode={setViewMode}
@@ -5325,6 +5768,9 @@ export default function Home() {
           currentRole={currentRole}
           userEmail={userEmail}
           pendingUpdatesCount={pendingUpdatesCount}
+          rowsSync={rowsSync}
+          onRefreshNow={refreshRowsFresh}
+          isRefreshingNow={isRefreshingNow}
           onOpenBackups={() => setIsBackupsModalOpen(true)}
           ckSyncSlot={
             <CkSyncButton
@@ -5349,10 +5795,18 @@ export default function Home() {
                 : viewMode === "fabricDispatch"
                   ? "Fabric Dispatch"
                   : viewMode === "triggers"
-                    ? "Trigger Manager"
+                    ? "Season AOQ Dates"
                     : viewMode === "reports"
                       ? "Reports"
-                      : "Action Center"
+                      : viewMode === "summaryOfGraphics"
+                        ? "TNA Report"
+                        : viewMode === "scoreCard"
+                          ? "Score Card"
+                          : viewMode === "plantPerformance"
+                            ? "Plant Performance"
+                            : viewMode === "plantSchedules"
+                            ? "Plant Schedules"
+                            : "Action Center"
           }
           subtitle={
             viewMode === "standard"
@@ -5362,10 +5816,18 @@ export default function Home() {
                 : viewMode === "fabricDispatch"
                   ? "Manage and export fabric requirements for dispatch."
                   : viewMode === "triggers"
-                    ? "View, delete, and merge Trigger tags across all items."
+                    ? "Set the AOQ fallback deadline per Category + Season."
                     : viewMode === "reports"
                       ? "Export approval reports by Season and Category."
-                      : "Quickly resolve missing data for new imports."
+                      : viewMode === "summaryOfGraphics"
+                        ? "AWR, S/Off, Approved, and Dropped dates by Category and Season — exportable to Excel."
+                        : viewMode === "scoreCard"
+                          ? "AOQ-approval performance by plant — click a plant to merge, hide, or see its graphics."
+                          : viewMode === "plantPerformance"
+                            ? "Monthly PPS performance by plant — green PPS earns points, red PPS loses them."
+                            : viewMode === "plantSchedules"
+                            ? "Per-plant calendar of upcoming planning events."
+                            : "Quickly resolve missing data for new imports."
           }
         />
 
@@ -5377,16 +5839,20 @@ export default function Home() {
               onUpdateRow={handleUpdateRow}
               currentRole={currentRole}
             />
+          ) : viewMode === "scoreCard" ? (
+            <ScoreCardDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
           ) : viewMode === "plantPerformance" ? (
-            <PlantPerformanceDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} />
+            <PlantPerformanceView rows={allCurrentVersionRows} archivedRows={archivedRows} />
           ) : viewMode === "plantSchedules" ? (
             <PlantSchedulesView rows={currentVersionRows} />
           ) : viewMode === "fabricDispatch" ? (
             <FabricDispatchView rows={currentVersionRows} onUpdateRow={handleUpdateRow} />
           ) : viewMode === "triggers" ? (
-            <TriggerManagementView rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
+            <TriggerManagementView rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} onRowsChanged={refreshRows} currentRole={currentRole} />
           ) : viewMode === "reports" ? (
             <ReportsView rows={allCurrentVersionRows} />
+          ) : viewMode === "summaryOfGraphics" ? (
+            <SummaryOfGraphicsView rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} />
           ) : viewMode === "advanced" ? (
             <div className="flex min-h-[calc(100vh-140px)] w-full mt-4">
               <AdvancedSidebarFilters
@@ -5636,12 +6102,16 @@ export default function Home() {
                     setSelectedSeasonFilter={setSelectedSeasonFilter}
                     selectedTriggerFilter={selectedTriggerFilter}
                     setSelectedTriggerFilter={setSelectedTriggerFilter}
+                    selectedPlantFilter={selectedPlantFilter}
+                    setSelectedPlantFilter={setSelectedPlantFilter}
                     selectedStatusFilter={selectedStatusFilter}
                     setSelectedStatusFilter={setSelectedStatusFilter}
                     selectedPlanStatusFilter={selectedPlanStatusFilter}
                     setSelectedPlanStatusFilter={setSelectedPlanStatusFilter}
                     dhlFilter={dhlFilter}
                     setDhlFilter={setDhlFilter}
+                    colorFilter={colorFilter}
+                    setColorFilter={setColorFilter}
                     selectedTeamFilter={selectedTeamFilter}
                     setSelectedTeamFilter={setSelectedTeamFilter}
                     rows={rows}
@@ -5669,12 +6139,14 @@ export default function Home() {
                     <Table
                       rows={displayedRows}
                       allRows={rows}
+                      historyRows={historyRows}
                       columns={columns}
                       onUpdateRow={handleUpdateRow}
                       onDeleteRow={handleDeleteRow}
                       onDeleteMultipleRows={handleDeleteMultipleRows}
                       onDuplicateRow={handleDuplicateRow}
                       onForceReplan={handleForceReplan}
+                      onNewVersion={(row) => setNewVersionRow(row)}
                       onClearRowPlan={handleClearRowPlan}
                       onSetPlanStartDate={handleSetPlanStartDate}
                       onApplyPlanFlow={(rowId, dateKey, flowId) =>

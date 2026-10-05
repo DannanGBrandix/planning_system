@@ -107,3 +107,18 @@ export function isValidTriggerValue(s: unknown): boolean {
   const upper = str.toUpperCase();
   return upper !== "N/A" && upper !== "-";
 }
+
+// Base season token ("SP27" from "SP27 ICON SHOP" / "FA27\n…") — shared by every page that
+// groups rows by season (Score Card, Plant Performance, the season/category filter dropdowns)
+// so they can never drift apart on what a row's season actually is.
+export function seasonBase(v: unknown): string {
+  return String(v ?? "").replace(/["'\r\n]+/g, " ").trim().toUpperCase().split(/\s+/)[0];
+}
+
+// Key format shared by the Trigger Manager's "Season AOQ Dates" table and Score Card's
+// AOQ fallback lookup (SeasonAoqMap from app/lib/db.ts) — a Trigger with no date of its own
+// (col20 blank, text doesn't parse as an M.D code) falls back to its Category+Season deadline,
+// since PINK/VS/CK each run their own AOQ calendar even within the same season.
+export function seasonAoqKey(category: unknown, season: unknown): string {
+  return `${String(category || "").trim().toUpperCase()}|||${String(season || "").trim().toUpperCase()}`;
+}

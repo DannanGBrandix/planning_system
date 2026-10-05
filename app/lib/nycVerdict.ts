@@ -12,7 +12,7 @@
 //     -> parseCommentVerdict reads it automatically (the date right after the
 //     initials is the verdict date, NOT the later "S/O DATED x").
 //   - CK: no such wording, so a person sets it by hand (grid event picker writes a
-//     real "<date>" NYC-A/NYC-R cell; Daily Events Excel and the Plant Performance
+//     real "<date>" NYC-A/NYC-R cell; Daily Events Excel and the Score Card
 //     drill-down call markNycVerdict, which writes a "nycv:<date>" key).
 //
 // Storage: derived verdicts live on "nycv:<YYYY-MM-DD>" keys (value "NYC-A"/"NYC-R").
@@ -23,11 +23,12 @@
 // into the schedule JSONB.
 
 import { parseEventValue } from "./eventCodes";
+import { extractValidDate, seasonAoqKey, seasonBase } from "./triggerUtils";
 
 export const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 const NYCV_RE = /^nycv:(\d{4}-\d{2}-\d{2})$/;
 
-// ── shared date helpers (also used by PlantPerformanceDashboard) ────────────
+// ── shared date helpers (also used by ScoreCardDashboard) ────────────
 
 // "4.7/4.28" -> [[4,7],[4,28]] · "3/17" -> [[3,17]] · "5.26" -> [[5,26]] · Excel serial -> [[m,d]]
 export function parseTriggerMD(trigger: string): [number, number][] {
@@ -222,7 +223,186 @@ export function deriveNycVerdict<T extends Record<string, unknown>>(row: T): T {
   return out as T;
 }
 
-// Write a manual verdict (Daily Events Excel, Plant Performance drill-down).
+// ── AOQ deadline + graphic-level approval verdict (shared by Score Card + Plant Performance) ──
+
+// A Trigger Manager catalog entry, structurally — accepts db.ts's TriggerCatalogEntry (which has
+// more fields, e.g. `id`) without importing db.ts into this file.
+export interface TriggerCatalogLike {
+  name: string;
+  category?: string;
+  season?: string;
+  aoqIso?: string;
+}
+
+// The SAME named Trigger ("KNIT", "LOUNGE", "COMPLETE", …) recurs every season with its OWN AOQ
+// deadline — KNIT in SU27 is not KNIT in SP27. Matches the catalog on name + Category + Season
+// first; a catalog entry saved with no Category (season-wide) still matches on name + Season
+// alone. NEVER matches a same-name entry from a DIFFERENT season — that was the bug: the old
+// name-only match (Table.tsx's col2 auto-fill) could silently stamp one season's KNIT date onto
+// another season's row, whichever catalog entry happened to come first.
+export function findTriggerCatalogAoq(
+  row: Record<string, unknown>,
+  triggerCatalog: TriggerCatalogLike[] | undefined,
+): string | null {
+  const name = String(row.col2 || "").trim().toLowerCase();
+  if (!name || !triggerCatalog?.length) return null;
+  const category = String(row.col3 || "").trim().toUpperCase();
+  const season = seasonBase(row.col4);
+  const sameName = triggerCatalog.filter((t) => t.name.trim().toLowerCase() === name);
+  const exact = sameName.find(
+    (t) => (t.category || "").trim().toUpperCase() === category && seasonBase(t.season) === season,
+  );
+  const seasonOnly = exact ?? sameName.find((t) => !(t.category || "").trim() && seasonBase(t.season) === season);
+  return seasonOnly?.aoqIso ? extractValidDate(seasonOnly.aoqIso) : null;
+}
+
+// AOQ deadline for a row: a real date in col20, else this row's Trigger looked up in the Trigger
+// Manager catalog by name + Category + Season (see findTriggerCatalogAoq), else the trigger's own
+// month/day code (parseTriggerMD + year resolved from the row's own events, nearestYearIso), else
+// the row's Category+Season AOQ date set on the Trigger Manager page (a Trigger like "KNIT" /
+// "COMPLETE" / "RECEIVE" names a process stage, not a deadline — this is the final catch-all for
+// when no per-Trigger catalog entry exists yet). Multiple dates on one trigger -> the latest.
+export function getRowAoqIso(
+  row: Record<string, unknown>,
+  seasonAoqMap: Record<string, string>,
+  triggerCatalog?: TriggerCatalogLike[],
+): string | null {
+  const col20 = extractValidDate(row.col20);
+  if (col20) return col20;
+  const catalogDate = findTriggerCatalogAoq(row, triggerCatalog);
+  if (catalogDate) return catalogDate;
+  const mds = parseTriggerMD(String(row.col2 || ""));
+  if (mds.length) {
+    const ref = rowRefIso(row);
+    const isos = mds.map(([m, d]) => nearestYearIso(m, d, ref)).filter(Boolean).sort();
+    if (isos.length) return isos[isos.length - 1];
+  }
+  const seasonDate = seasonAoqMap[seasonAoqKey(row.col3, seasonBase(row.col4))];
+  return seasonDate ? extractValidDate(seasonDate) : null;
+}
+
+export type AoqVerdict = "onTime" | "late" | "rejected" | "pending" | "unscored";
+
+export interface GraphicAoqResult {
+  aoqIso: string | null;
+  approvalIso: string | null;
+  rejectedIso: string | null;
+  verdict: AoqVerdict;
+  daysVsAoq: number | null; // (aoq + grace) - approval; >= 0 == on time
+  estimated: boolean; // verdict parsed live from a comment (not materialised), or a dateless approval
+}
+
+function addAoqDays(iso: string, n: number): string {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+// whole days from `a` to `b` (b - a). Positive => b is later.
+function aoqDayDiff(a: string, b: string): number {
+  return Math.round((Date.parse(b + "T00:00:00") - Date.parse(a + "T00:00:00")) / 86_400_000);
+}
+
+/**
+ * A graphic's AOQ-approval verdict, resolved from ALL of its rows (a graphic is often several
+ * combo/style rows) — the same state machine Score Card's "AOQ Approval" page scores plants with.
+ * Plant Performance's "approved before AOQ" half of its composite score reuses this so the two
+ * pages can never disagree about the same graphic's verdict.
+ *
+ * `entries` pairs each row with its already-computed getRowStatus() result (kept as a plain string
+ * here rather than importing db.ts's getRowStatus into this file — both callers already call it
+ * for their own row filtering anyway).
+ */
+export function resolveGraphicAoqVerdict(
+  entries: { row: Record<string, unknown>; status: string }[],
+  seasonAoqMap: Record<string, string>,
+  opts: { graceDays?: number; useFallback?: boolean; triggerCatalog?: TriggerCatalogLike[] } = {},
+): GraphicAoqResult {
+  const graceDays = opts.graceDays ?? 1;
+  const useFallback = opts.useFallback ?? true;
+
+  let aoqIso: string | null = null;
+  let approvalIso: string | null = null;
+  let rejectedIso: string | null = null;
+  let anyEstimated = false;
+  let lastNycIso: string | null = null;
+  let anyApprovedStatus = false;
+  let anyResubmitStatus = false;
+
+  entries.forEach(({ row: r, status }) => {
+    if (status === "approved") anyApprovedStatus = true;
+    if (status === "resubmit") anyResubmitStatus = true;
+
+    const rowAoq = getRowAoqIso(r, seasonAoqMap, opts.triggerCatalog);
+    if (rowAoq && (!aoqIso || rowAoq > aoqIso)) aoqIso = rowAoq; // latest wins = lenient
+
+    const scan = (k: string, v: unknown) => {
+      if (typeof v !== "string" || !v.trim() || !/^\d{4}-\d{2}-\d{2}/.test(k)) return;
+      const iso = k.slice(0, 10);
+      const p = parseEventValue(v);
+      if (!p) return;
+      const bc = (p.code || "").split("-")[0].toUpperCase();
+      if ((bc === "NYC" || bc === "NY") && (!lastNycIso || iso > lastNycIso)) lastNycIso = iso;
+    };
+    Object.entries(r).forEach(([k, v]) => scan(k, v));
+    const sched = (r as { schedule?: unknown }).schedule;
+    if (sched && typeof sched === "object") {
+      Object.entries(sched as Record<string, unknown>).forEach(([k, v]) => scan(k, v));
+    }
+
+    // NY approval verdict: real NYC-A/NYC-R cell -> manual "nycv:" -> derived "nycv:" -> parse
+    // the strike-off comment on the fly.
+    const rv = readNycVerdict(r);
+    if (rv) {
+      if (rv.source === "comment") anyEstimated = true;
+      if (rv.kind === "A") {
+        if (!approvalIso || rv.iso < approvalIso) approvalIso = rv.iso;
+      } else if (!rejectedIso || rv.iso > rejectedIso) {
+        rejectedIso = rv.iso;
+      }
+    }
+  });
+
+  let verdict: AoqVerdict;
+  let daysVsAoq: number | null = null;
+  let estimated = anyEstimated;
+  let effApprovalIso: string | null = approvalIso;
+  let effRejected = Boolean(rejectedIso && (!approvalIso || rejectedIso > approvalIso));
+
+  // Last-resort fallback for a row that is Approved / Resubmit by getRowStatus but whose
+  // comment carries no parseable "AD M/D" line-date.
+  if (!approvalIso && !rejectedIso && useFallback && (anyApprovedStatus || anyResubmitStatus)) {
+    estimated = true;
+    if (anyApprovedStatus) effApprovalIso = lastNycIso; // may be null -> "unscored"
+    else effRejected = true;
+  }
+
+  if (effApprovalIso && !effRejected) {
+    if (!aoqIso) {
+      verdict = "unscored";
+    } else {
+      daysVsAoq = aoqDayDiff(effApprovalIso, addAoqDays(aoqIso, graceDays)); // deadline - approval
+      verdict = daysVsAoq >= 0 ? "onTime" : "late";
+    }
+  } else if (effRejected) {
+    verdict = "rejected";
+  } else if (anyApprovedStatus && !effApprovalIso) {
+    // approved, but no date anywhere to place it — count it as approved, timing unknown
+    verdict = "unscored";
+  } else {
+    verdict = "pending";
+  }
+
+  return {
+    aoqIso,
+    approvalIso: effApprovalIso,
+    rejectedIso: effRejected ? (rejectedIso || null) : null,
+    verdict,
+    daysVsAoq,
+    estimated,
+  };
+}
+
+// Write a manual verdict (Daily Events Excel, Score Card drill-down).
 export function markNycVerdict<T extends Record<string, unknown>>(
   row: T,
   kind: "A" | "R",

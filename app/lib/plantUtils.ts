@@ -103,12 +103,36 @@ const CANONICAL_PLANTS: Record<string, string> = {
   "SCREN": "SCREEN LINE",
   "SL": "SCREEN LINE",
 
-  // Tharindu Print / Printers
+  // Tharindu Print / Printers — bare "Tharindu" is the same plant
+  "THARINDU": "THARINDU PRINT",
   "THARINDU PRINT": "THARINDU PRINT",
+  "THARINDU PRINTER": "THARINDU PRINT",
   "THARINDU PRINTERS": "THARINDU PRINT",
+  "THRINDU": "THARINDU PRINT",
   "THRINDU PRINTERS": "THARINDU PRINT",
   "THRINDU PRINT": "THARINDU PRINT",
 };
+
+// Runtime, user-managed plant aliases/exclusions — set once from Supabase on app load (see
+// applyPlantAliasConfig, called from page.tsx) so a planner can merge two plant spellings or
+// hide a bogus one from the Score Card / Plant Manager UI without a code change or
+// rewriting the raw col11/col12 text on every row. Layered ON TOP of the hardcoded
+// CANONICAL_PLANTS table above (checked first, so a user alias always wins).
+let RUNTIME_PLANT_ALIASES: Record<string, string> = {};
+let RUNTIME_EXCLUDED_PLANTS: Set<string> = new Set();
+
+export function applyPlantAliasConfig(config: { aliases?: Record<string, string>; excluded?: string[] }): void {
+  const aliases: Record<string, string> = {};
+  Object.entries(config.aliases || {}).forEach(([k, v]) => {
+    if (k && v) aliases[k.trim().toUpperCase()] = v.trim().toUpperCase();
+  });
+  RUNTIME_PLANT_ALIASES = aliases;
+  RUNTIME_EXCLUDED_PLANTS = new Set((config.excluded || []).map((p) => p.trim().toUpperCase()));
+}
+
+export function getPlantAliasRuntimeConfig(): { aliases: Record<string, string>; excluded: string[] } {
+  return { aliases: { ...RUNTIME_PLANT_ALIASES }, excluded: Array.from(RUNTIME_EXCLUDED_PLANTS) };
+}
 
 /**
  * Normalizes an individual raw plant string into its clean canonical name.
@@ -134,15 +158,22 @@ export function normalizeSinglePlant(rawName: string): string {
   }
 
   const mapped = CANONICAL_PLANTS[clean];
-  if (mapped) return mapped;
+  let canonical = mapped || clean;
 
   // Fuzzy catch-all for the messier embellishment-plant spellings that the exact list above
   // can't fully enumerate. "Brandix Embellishment(s)" of any wording -> AV; any "H / HI
   // Embellishment(s)" wording -> HI EMB.
-  if (/BRANDIX/.test(clean) && /\bEMB/.test(clean)) return "AV";
-  if (/^H(?:I)?\s*[- ]?\s*EMB/.test(clean)) return "HI EMB";
+  if (!mapped) {
+    if (/BRANDIX/.test(clean) && /\bEMB/.test(clean)) canonical = "AV";
+    else if (/^H(?:I)?\s*[- ]?\s*EMB/.test(clean)) canonical = "HI EMB";
+  }
 
-  return clean;
+  // A user-defined alias (Plant Manager merge) applies on top of the built-in mapping — chase
+  // it once more in case the merge target is itself aliased.
+  const userMapped = RUNTIME_PLANT_ALIASES[canonical];
+  if (userMapped) canonical = userMapped;
+
+  return canonical;
 }
 
 // Every distinct canonical plant name, longest first, as a whitespace-flexible regex — used to
@@ -192,7 +223,7 @@ function leftoverIsPlant(leftover: string): boolean {
 // Names that show up in the PLANT / PLANT FLOW columns but are NOT tracked plants:
 //  - BFL / MARTEX / DYNAWASH are external dye/wash pass-through VENDORS (they drive the
 //    PPSDS->RDPS flow but never get their own planning row — see detectMatchingFlow /
-//    getEventsForChainStage), so they must not appear as plants in Plant Performance /
+//    getEventsForChainStage), so they must not appear as plants in Score Card /
 //    Plant Schedules.
 //  - short junk codes ("AD") the planner has confirmed aren't plants.
 const NON_TRACKED_PLANTS = new Set(["BFL", "MARTEX", "DYNAWASH", "AD"]);
@@ -202,6 +233,7 @@ const NON_TRACKED_PLANTS = new Set(["BFL", "MARTEX", "DYNAWASH", "AD"]);
 function isTrackablePlant(canonical: string): boolean {
   if (!canonical) return false;
   if (NON_TRACKED_PLANTS.has(canonical)) return false;
+  if (RUNTIME_EXCLUDED_PLANTS.has(canonical)) return false;
   if (canonical.length <= 2 && !CANONICAL_PLANTS[canonical]) return false;
   return true;
 }
@@ -221,8 +253,13 @@ export function extractPlants(cellValue?: string | null): string[] {
   const tokens = clean.split(/>>|>|\+|\/|,|\n/);
 
   const plantSet = new Set<string>();
+  // extractKnownPlantsFromToken below returns names straight from KNOWN_PLANT_MATCHERS
+  // (built once from CANONICAL_PLANTS), bypassing normalizeSinglePlant entirely — so a runtime
+  // Plant Manager merge (RUNTIME_PLANT_ALIASES) has to be re-applied here too, or it would only
+  // ever take effect on the "nothing known matched" fallback path below.
   const add = (name: string) => {
-    if (isTrackablePlant(name)) plantSet.add(name);
+    const resolved = RUNTIME_PLANT_ALIASES[name] || name;
+    if (isTrackablePlant(resolved)) plantSet.add(resolved);
   };
   tokens.forEach((tok) => {
     if (!tok || !tok.trim()) return;
@@ -301,6 +338,18 @@ export function plantFromFlow(plantFlowRaw?: string | null): string {
     .filter(Boolean);
   const real = segments.find((s) => !isWashDye(s));
   return real || "";
+}
+
+/**
+ * The canonical plants a row belongs to for the dashboard's Plant filter: the plants in its Plant
+ * column (col11), or — when col11 is blank — in the plant segment recovered from Plant Flow
+ * (col12, see plantFromFlow). Aliases collapse via extractPlants, and a cross-dev
+ * "ANTLER/LEEMA" row yields both plants.
+ */
+export function rowFilterPlants(row: object): string[] {
+  const r = row as { col11?: unknown; col12?: unknown };
+  const plant = String(r.col11 || "").trim() || plantFromFlow(String(r.col12 || ""));
+  return extractPlants(plant);
 }
 
 /**
@@ -432,11 +481,13 @@ export interface PlantDateTarget {
  *  - bare "<date>" key on a "/"-split cross-dev row -> every leg that hasn't diverged yet, each
  *    confirming against its own "<date>_<leg>" key, "+"-split into its individual plants
  *  - bare key on any other row -> the first plant only (unchanged)
- * Already pass/fail events are skipped (they need no confirmation).
+ * Already pass/fail events are skipped (they need no confirmation) unless `includeVerdicts` is set —
+ * the Plant Performance page needs exactly those, to score the plant that owned a green/red event.
  */
 export function resolvePlantDateTargets(
   row: Record<string, unknown>,
   isoDate: string,
+  opts?: { includeVerdicts?: boolean },
 ): PlantDateTarget[] {
   const legs = crossDevLegNames(row);
   const out: PlantDateTarget[] = [];
@@ -455,7 +506,7 @@ export function resolvePlantDateTargets(
     const suffix = m[2] || "";
     const rawValue = String((row as Record<string, unknown>)[key] || "");
     const parsed = parseEventValue(rawValue);
-    if (!parsed || parsed.status !== "planned") return;
+    if (!parsed || (parsed.status !== "planned" && !opts?.includeVerdicts)) return;
 
     if (suffix) {
       splitLegPlants(suffix).forEach((p) =>

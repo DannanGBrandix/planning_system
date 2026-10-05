@@ -27,7 +27,7 @@ export const EVENT_CODES: EventCode[] = [
   { code: "NYC",         label: "NYC",         description: "Customer comments received",                   category: "internal",  hasPassFail: false },
   // Verdict placed AFTER NYC (comments received): NYC-A = NY approved, NYC-R = NY rejected /
   // re-strike required. The DATE the planner puts it on is the approval date scored against the
-  // season's AOQ deadline in Plant Performance. Not part of any auto-scheduler flow sequence —
+  // season's AOQ deadline in Score Card. Not part of any auto-scheduler flow sequence —
   // a planner stamps it manually once the customer verdict lands.
   { code: "NYC-A",       label: "NYC-A",       description: "NY approved (verdict after NYC comments)",     category: "approval",  hasPassFail: false },
   { code: "NYC-R",       label: "NYC-R",       description: "NY rejected — re-strike required (after NYC)", category: "approval",  hasPassFail: false },

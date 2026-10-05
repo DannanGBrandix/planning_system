@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { EmbellishmentRow, isRowSent } from "../lib/db";
+import { EmbellishmentRow, isRowSent, colorApprovalByCombo } from "../lib/db";
+import { rowFilterPlants } from "../lib/plantUtils";
 
 interface FilterControlsProps {
   searchQuery: string;
@@ -12,8 +13,12 @@ interface FilterControlsProps {
   setSelectedSeasonFilter?: (season: string) => void;
   selectedTriggerFilter?: string;
   setSelectedTriggerFilter?: (trigger: string) => void;
+  selectedPlantFilter?: string;
+  setSelectedPlantFilter?: (plant: string) => void;
   dhlFilter?: "all" | "withDhl" | "noDhl";
   setDhlFilter?: (dhlFilter: "all" | "withDhl" | "noDhl") => void;
+  colorFilter?: "all" | "colorApproved" | "missingColor";
+  setColorFilter?: (colorFilter: "all" | "colorApproved" | "missingColor") => void;
   rows: EmbellishmentRow[];
   onOpenConfig: () => void;
   onResetDatabase: () => void;
@@ -39,8 +44,12 @@ export default function FilterControls({
   setSelectedSeasonFilter,
   selectedTriggerFilter,
   setSelectedTriggerFilter,
+  selectedPlantFilter,
+  setSelectedPlantFilter,
   dhlFilter,
   setDhlFilter,
+  colorFilter,
+  setColorFilter,
   rows,
   onOpenConfig,
   onResetDatabase,
@@ -106,6 +115,16 @@ export default function FilterControls({
     return Array.from(set).sort();
   }, [rows, selectedCategoryFilter, selectedSeasonFilter]);
 
+  // Plants for the Plant Filter Dropdown, with row counts — canonical names (aliases merged),
+  // each plant of a cross-dev "/" split counted on its own.
+  const plantCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    rows.forEach((r) => {
+      rowFilterPlants(r).forEach((p) => counts.set(p, (counts.get(p) || 0) + 1));
+    });
+    return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [rows]);
+
   // Count of rows with DHL tracking and without
   const dhlRowCount = useMemo(() => {
     return rows.filter((r) => (String(String(String(String(r.col24 || ""))))).trim() !== "").length;
@@ -115,13 +134,25 @@ export default function FilterControls({
     return rows.filter((r) => !isRowSent(r)).length;
   }, [rows]);
 
+  // Combo counts for the Color Approval filter (Approved combos only, like the Advanced card).
+  const colorCounts = useMemo(() => {
+    let colorApproved = 0, missingColor = 0;
+    colorApprovalByCombo(rows).forEach((s) => {
+      if (s === "colorApproved") colorApproved++;
+      else missingColor++;
+    });
+    return { colorApproved, missingColor };
+  }, [rows]);
+
   const hasActiveFilters = Boolean(
     searchQuery ||
     selectedGraphicFilter ||
     (dhlFilter && dhlFilter !== "all") ||
+    (colorFilter && colorFilter !== "all") ||
     (selectedCategoryFilter && selectedCategoryFilter !== "") ||
     (selectedSeasonFilter && selectedSeasonFilter !== "") ||
     (selectedTriggerFilter && selectedTriggerFilter !== "") ||
+    (selectedPlantFilter && selectedPlantFilter !== "") ||
     (selectedTeamFilter && selectedTeamFilter !== "All Teams")
   );
 
@@ -129,9 +160,11 @@ export default function FilterControls({
     setSearchQuery("");
     setSelectedGraphicFilter("");
     if (setDhlFilter) setDhlFilter("all");
+    if (setColorFilter) setColorFilter("all");
     if (setSelectedCategoryFilter) setSelectedCategoryFilter("");
     if (setSelectedSeasonFilter) setSelectedSeasonFilter("");
     if (setSelectedTriggerFilter) setSelectedTriggerFilter("");
+    if (setSelectedPlantFilter) setSelectedPlantFilter("");
     if (setSelectedTeamFilter) setSelectedTeamFilter("All Teams");
     if (setSelectedStatusFilter) setSelectedStatusFilter("Active");
   };
@@ -435,6 +468,31 @@ export default function FilterControls({
           </div>
         )}
 
+        {/* Plant Filter Dropdown */}
+        {selectedPlantFilter !== undefined && setSelectedPlantFilter && (
+          <div className="relative">
+            <select
+              suppressHydrationWarning
+              value={selectedPlantFilter}
+              onChange={(e) => setSelectedPlantFilter(e.target.value)}
+              className="appearance-none flex items-center gap-1.5 pl-3.5 pr-8 py-2 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-700 dark:text-zinc-300 cursor-pointer max-w-[160px] truncate"
+              title="Filter by Plant"
+            >
+              <option value="" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Plants</option>
+              {plantCounts.map(([plant, count]) => (
+                <option key={plant} value={plant} className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">
+                  {plant} ({count})
+                </option>
+              ))}
+            </select>
+            <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-zinc-500 dark:text-zinc-400">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
+          </div>
+        )}
+
         {/* DHL Tracking Filter Dropdown */}
         {dhlFilter !== undefined && setDhlFilter && (
           <div className="relative">
@@ -454,6 +512,34 @@ export default function FilterControls({
               <option value="all" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">• DHL Tracking ({dhlRowCount})</option>
               <option value="withDhl" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">With DHL ({dhlRowCount})</option>
               <option value="noDhl" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Not Dispatched — No DHL ({noDhlRowCount})</option>
+            </select>
+            <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-zinc-500 dark:text-zinc-400">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
+          </div>
+        )}
+
+        {/* Color Approval Filter Dropdown — Approved combos with / without a colour sign-off */}
+        {colorFilter !== undefined && setColorFilter && (
+          <div className="relative">
+            <select
+              suppressHydrationWarning
+              value={colorFilter}
+              onChange={(e) => setColorFilter(e.target.value as "all" | "colorApproved" | "missingColor")}
+              className={`appearance-none flex items-center gap-1.5 pl-3.5 pr-8 py-2 rounded-xl text-xs font-semibold transition-all border cursor-pointer ${
+                colorFilter !== "all"
+                  ? colorFilter === "missingColor"
+                    ? "bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30 shadow-xs"
+                    : "bg-pink-500/15 text-pink-700 dark:text-pink-300 border-pink-500/30 shadow-xs"
+                  : "bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 text-zinc-700 dark:text-zinc-300 border-zinc-200 dark:border-zinc-800"
+              }`}
+              title="Approved combos (Style + Graphic + Combo + Ground): with vs. without a colour sign-off in the Strike-Off Comments"
+            >
+              <option value="all" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">• Color Approval (All)</option>
+              <option value="colorApproved" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Color Approved ({colorCounts.colorApproved})</option>
+              <option value="missingColor" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Approved — Missing Color ({colorCounts.missingColor})</option>
             </select>
             <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-zinc-500 dark:text-zinc-400">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

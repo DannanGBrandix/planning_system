@@ -1,21 +1,39 @@
 const fs = require("fs");
 const path = require("path");
 
-const targetEnv = process.argv[2]; // "test" or "prod"
+const targetEnv = process.argv[2]; // "test", "prod", "oldprod" or "oldtest"
 
-if (!targetEnv || (targetEnv !== "test" && targetEnv !== "prod")) {
-  console.log("Usage: node server/switch_db.js [test|prod]");
+if (!targetEnv || !["test", "prod", "oldprod", "oldtest"].includes(targetEnv)) {
+  console.log("Usage: node server/switch_db.js [test|prod|oldprod|oldtest]");
   process.exit(1);
 }
 
 const DB_CONFIGS = {
+  // PRODUCTION since 2026-09-19: the new Supabase account/project (readable column names —
+  // see docs/named-columns-and-restore.md). Data was restored from the old prod and verified.
   prod: {
-    name: "PRODUCTION / ORIGINAL DATABASE",
+    name: "PRODUCTION (new project, Sep 2026)",
+    url: "https://dxppkrlwsrbeiakvjtcg.supabase.co",
+    key: "sb_publishable_HZ8kMu9zqs-RVwj_lUU0Fw_ZURuzH1X",
+  },
+  // The previous production project (old account/org, over its free egress quota). Kept only as a
+  // rollback; legacy col1..col33 column names — server/db.js auto-detects that. Do not write to it
+  // after cut-over: it no longer receives the app's data.
+  oldprod: {
+    name: "OLD PRODUCTION (rollback only)",
     url: "https://ktgsyakzevczufcziqci.supabase.co",
     key: "sb_publishable_sd4ukbcNz0Ut6FEdxUugAA_uuhnCCHE",
   },
+  // TEST since 2026-09-19: a second project in the NEW Supabase account (readable column names),
+  // loaded with a copy of production so tests run against real-shaped data.
   test: {
-    name: "TESTING DATABASE",
+    name: "TESTING DATABASE (new project, Sep 2026)",
+    url: "https://wetaazteocnpkkciemvw.supabase.co",
+    key: "sb_publishable_0f7BeIAhjGu5opptu4zriA_iTEig2Tg",
+  },
+  // The previous test project (old account/org). Legacy col1..col33 names.
+  oldtest: {
+    name: "OLD TESTING DATABASE (previous project)",
     url: "https://vxsfwwdcjjhsitfauyxa.supabase.co",
     key: "sb_publishable_Tlo7TJBaxPe-WUAxHP9zyg_unc9W2nP",
   },

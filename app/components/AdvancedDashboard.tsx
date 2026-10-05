@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { EmbellishmentRow, getRowStatus, isRowSent, getGroupStatus, groupRowsByCombo, hasColorApproval, hasPlacementApproval, hasStrikeOffSubmission } from "../lib/db";
+import { EmbellishmentRow, getRowStatus, isRowSent, getGroupStatus, groupRowsByCombo, hasColorApproval, hasPlacementApproval, hasStrikeOffSubmission, hasBuy } from "../lib/db";
 import ComboListModal from "./ComboListModal";
 import { isCkFamilyCategory } from "../lib/ckCategories";
 import {
@@ -15,12 +15,24 @@ import {
 } from "recharts";
 import { FilterSelections } from "./AdvancedSidebarFilters";
 import { extractValidDate, formatDateDDMMYYYY } from "../lib/triggerUtils";
+import { extractPlants, plantFromFlow } from "../lib/plantUtils";
 
 interface AdvancedDashboardProps {
   rows: EmbellishmentRow[];
   onAutoApprove?: (rowIds: string[]) => void;
   selections?: FilterSelections;
   onUpdateRow?: (updatedRow: EmbellishmentRow) => void | Promise<void>;
+}
+
+// Technique name used by the "Techniques In Season" chart and its plant table: the row's
+// Technique Category (col18, e.g. "26.Applique") rather than the free-text Technique column
+// (col9), which splits one technique into many spelling variants. The planner's numbering prefix
+// ("24.", "1. ") is dropped so it reads just "Applique" / "PRINT" (kept if the cell is ONLY a
+// number). `key` is upper-cased so "26.Applique" / "12.APPLIQUE" land together.
+function techniqueCategoryOf(r: EmbellishmentRow): { key: string; label: string } | null {
+  const raw = String(r.col18 || "").replace(/\s+/g, " ").trim();
+  const label = raw.replace(/^\d+\s*[.)\-:]?\s*/, "").trim() || raw;
+  return label ? { key: label.toUpperCase(), label } : null;
 }
 
 // Helper: detect if a row has "C+P SP" style comment in strike-off fields
@@ -50,7 +62,7 @@ export default function AdvancedDashboard({
   // clicking a card opens the popup listing exactly which active combos are still missing that
   // approval (previously the card only showed a bare count with no way to see which items it
   // referred to).
-  const [approvalGapModal, setApprovalGapModal] = useState<"color" | "placementNeeded" | "layoutTech" | "cp" | "commentsPending" | null>(null);
+  const [approvalGapModal, setApprovalGapModal] = useState<"color" | "colorBuy" | "colorNoBuy" | "placementNeeded" | "layoutTech" | "cp" | "commentsPending" | null>(null);
   const [editingTriggerKey, setEditingTriggerKey] = useState<string | null>(
     null,
   );
@@ -296,18 +308,31 @@ export default function AdvancedDashboard({
     let graphicColorApproved = 0;
     let comboPlacementApproved = 0;
     let graphicPlacementApproved = 0;
+    // Color Approval split by Buy status (hasBuy, any member row wins): approved combos that
+    // have a buy vs. ones that don't, and how many of each are colour-approved.
+    const comboColorByBuy = {
+      buy: { approved: 0, color: 0 },
+      noBuy: { approved: 0, color: 0 },
+    };
 
     comboMap.forEach((cRows) => {
       const statuses = cRows.map(getRowStatus);
       if (statuses.every((s) => s === "dropped") || isHoldGroup(statuses)) return; // only active combos, matching the hero metrics
-      if (cRows.some(hasColorApproval)) comboColorApproved++;
+      // Color approval is counted out of the APPROVED combos only (base = comboApproved), so
+      // "missing" = approved combos still without a colour sign-off.
+      if (getGroupStatus(cRows) === "approved") {
+        const bucket = cRows.some(hasBuy) ? comboColorByBuy.buy : comboColorByBuy.noBuy;
+        bucket.approved++;
+        if (cRows.some(hasColorApproval)) bucket.color++;
+      }
+      if (getGroupStatus(cRows) === "approved" && cRows.some(hasColorApproval)) comboColorApproved++;
       if (cRows.some(hasPlacementApproval)) comboPlacementApproved++;
     });
 
     graphicMap.forEach((gRows) => {
       const statuses = gRows.map(getRowStatus);
       if (statuses.every((s) => s === "dropped") || isHoldGroup(statuses)) return;
-      if (gRows.some(hasColorApproval)) graphicColorApproved++;
+      if (getGroupStatus(gRows) === "approved" && gRows.some(hasColorApproval)) graphicColorApproved++;
       if (gRows.some(hasPlacementApproval)) graphicPlacementApproved++;
     });
 
@@ -433,8 +458,8 @@ export default function AdvancedDashboard({
         ? Math.round((comboLayoutTechApproved / activeCombos) * 100)
         : 0;
     const comboColorRate =
-      activeCombos > 0
-        ? Math.round((comboColorApproved / activeCombos) * 100)
+      comboApproved > 0
+        ? Math.round((comboColorApproved / comboApproved) * 100)
         : 0;
     const comboPlacementRate =
       activeCombos > 0
@@ -449,8 +474,8 @@ export default function AdvancedDashboard({
         ? Math.round((graphicLayoutTechApproved / activeGraphics) * 100)
         : 0;
     const graphicColorRate =
-      activeGraphics > 0
-        ? Math.round((graphicColorApproved / activeGraphics) * 100)
+      graphicApproved > 0
+        ? Math.round((graphicColorApproved / graphicApproved) * 100)
         : 0;
 
     return {
@@ -511,6 +536,7 @@ export default function AdvancedDashboard({
         layoutTechRate: comboLayoutTechRate,
         colorApproved: comboColorApproved,
         colorRate: comboColorRate,
+        colorByBuy: comboColorByBuy,
         placementApproved: comboPlacementApproved,
         placementRate: comboPlacementRate,
       },
@@ -548,6 +574,11 @@ export default function AdvancedDashboard({
     });
 
     const color: EmbellishmentRow[] = [];
+    // The colour-APPROVED combos behind the Color Approval card's Has Buy / No Buy boxes (same
+    // approved + hasBuy rule as stats.combo.colorByBuy). Surfaces the row carrying the colour
+    // sign-off so its comment shows in the list.
+    const colorBuy: EmbellishmentRow[] = [];
+    const colorNoBuy: EmbellishmentRow[] = [];
     // Placement's drill-down is the actionable work list: combos that have already cleared Tech &
     // Layout approval (the prerequisite step) but do NOT yet have placement sign-off — i.e. "these
     // are ready for you to chase placement approval on".
@@ -565,7 +596,14 @@ export default function AdvancedDashboard({
     comboMap.forEach((cRows) => {
       const isDropped = cRows.every((r) => getRowStatus(r) === "dropped");
       if (isDropped) return; // matches the cards' own "active combos" denominator
-      if (!cRows.some(hasColorApproval)) color.push(cRows[0]);
+      // Color gap = APPROVED combos with no colour sign-off (matches the card's approved base).
+      if (getGroupStatus(cRows) === "approved" && !cRows.some(hasColorApproval)) {
+        color.push(cRows.find((r) => getRowStatus(r) === "approved") ?? cRows[0]);
+      }
+      if (getGroupStatus(cRows) === "approved" && cRows.some(hasColorApproval)) {
+        const shown = cRows.find(hasColorApproval) ?? cRows[0];
+        (cRows.some(hasBuy) ? colorBuy : colorNoBuy).push(shown);
+      }
       const statuses = cRows.map(getRowStatus);
       const techLayoutApproved = statuses.some((s) => s === "approved");
       if (!techLayoutApproved) layoutTech.push(cRows[0]);
@@ -594,12 +632,14 @@ export default function AdvancedDashboard({
       return String(a.col6 || "").localeCompare(String(b.col6 || ""));
     };
     color.sort(byGraphicThenCombo);
+    colorBuy.sort(byGraphicThenCombo);
+    colorNoBuy.sort(byGraphicThenCombo);
     placementNeeded.sort(byGraphicThenCombo);
     layoutTech.sort(byGraphicThenCombo);
     cp.sort(byGraphicThenCombo);
     commentsPending.sort(byGraphicThenCombo);
 
-    return { color, placementNeeded, layoutTech, cp, commentsPending };
+    return { color, colorBuy, colorNoBuy, placementNeeded, layoutTech, cp, commentsPending };
   }, [rows]);
 
   // Donut data — the 6 exclusive combo status buckets, so the ring is a true
@@ -626,7 +666,7 @@ export default function AdvancedDashboard({
   // Technique / Risk / Plant breakdown for the currently filtered rows (which are already
   // scoped to whatever Season the sidebar has selected — this component never re-filters by
   // season itself, it just visualizes whatever `rows` it's handed). One bar per distinct
-  // Technique (col9), stacked by Risk Factor (col17) so risk is visible at a glance, with the
+  // Technique Category (col18), stacked by Risk Factor (col17) so risk is visible at a glance, with the
   // full plant breakdown (col11) surfaced in the tooltip since a technique is often split
   // across several plants.
   const techniqueChartData = useMemo(() => {
@@ -636,11 +676,13 @@ export default function AdvancedDashboard({
     >();
 
     rows.forEach((r) => {
-      const technique = String(r.col9 || "").trim();
-      if (!technique) return;
+      const tc = techniqueCategoryOf(r);
+      if (!tc) return;
+      const technique = tc.label;
+      const techniqueKey = tc.key;
 
-      if (!map.has(technique)) {
-        map.set(technique, {
+      if (!map.has(techniqueKey)) {
+        map.set(techniqueKey, {
           technique,
           high: 0,
           medium: 0,
@@ -649,7 +691,7 @@ export default function AdvancedDashboard({
           plants: new Map(),
         });
       }
-      const entry = map.get(technique)!;
+      const entry = map.get(techniqueKey)!;
 
       const risk = String(r.col17 || "").trim().toUpperCase();
       if (risk.includes("HIGH")) entry.high += 1;
@@ -685,6 +727,87 @@ export default function AdvancedDashboard({
       .sort((a, b) => b.total - a.total)
       .slice(0, 12); // keep the chart simple to read — top 12 techniques by volume
   }, [rows]);
+
+  // Plant x Technique table under the techniques chart: which plants are running each technique
+  // and how many items. Plants come from col11 split into individual canonical plants
+  // (extractPlants — aliases collapsed, wash/dye vendors dropped), falling back to the Plant
+  // Flow's real plant segment when col11 is blank. A cross-dev / two-plant row counts once for
+  // EACH of its plants, so a plant row's numbers are "items this plant works on" — column sums
+  // can be higher than the chart's per-technique totals.
+  const plantTechniqueMatrix = useMemo(() => {
+    type RiskCounts = { high: number; medium: number; low: number; unrated: number };
+    const emptyRisk = (): RiskCounts => ({ high: 0, medium: 0, low: 0, unrated: 0 });
+    const techniques = new Map<string, { label: string; total: number }>();
+    const plants = new Map<
+      string,
+      { plant: string; total: number; counts: Map<string, number>; risk: RiskCounts; techRisk: Map<string, RiskCounts> }
+    >();
+
+    rows.forEach((r) => {
+      const tc = techniqueCategoryOf(r);
+      if (!tc) return;
+      // Risk Factor (col17) — same buckets as the chart above.
+      const riskRaw = String(r.col17 || "").trim().toUpperCase();
+      const risk: keyof RiskCounts = riskRaw.includes("HIGH")
+        ? "high"
+        : riskRaw.includes("MED")
+          ? "medium"
+          : riskRaw.includes("LOW")
+            ? "low"
+            : "unrated";
+      let rowPlants = extractPlants(r.col11 as string | null | undefined);
+      if (rowPlants.length === 0) rowPlants = extractPlants(plantFromFlow(r.col12 as string | null | undefined));
+      if (rowPlants.length === 0) rowPlants = ["Unassigned"];
+
+      if (!techniques.has(tc.key)) techniques.set(tc.key, { label: tc.label, total: 0 });
+      techniques.get(tc.key)!.total += 1;
+
+      rowPlants.forEach((plant) => {
+        if (!plants.has(plant)) {
+          plants.set(plant, { plant, total: 0, counts: new Map(), risk: emptyRisk(), techRisk: new Map() });
+        }
+        const entry = plants.get(plant)!;
+        entry.total += 1;
+        entry.counts.set(tc.key, (entry.counts.get(tc.key) || 0) + 1);
+        entry.risk[risk] += 1;
+        if (!entry.techRisk.has(tc.key)) entry.techRisk.set(tc.key, emptyRisk());
+        entry.techRisk.get(tc.key)![risk] += 1;
+      });
+    });
+
+    // One card per technique, same order as the chart (by item count), each listing its plants
+    // busiest-first.
+    const cards = Array.from(techniques.entries())
+      .map(([key, v]) => {
+        const plantList = Array.from(plants.values())
+          .map((p) => ({ plant: p.plant, count: p.counts.get(key) || 0 }))
+          .filter((p) => p.count > 0)
+          .sort((a, b) => b.count - a.count || a.plant.localeCompare(b.plant));
+        return { key, label: v.label, total: v.total, plantList };
+      })
+      .sort((a, b) => b.total - a.total);
+
+    // Reverse view for the plant popup (click a plant name): that plant's techniques, busiest first.
+    const byPlant = new Map<
+      string,
+      { total: number; risk: RiskCounts; techniques: { label: string; count: number; risk: RiskCounts }[] }
+    >();
+    plants.forEach((p) => {
+      byPlant.set(p.plant, {
+        total: p.total,
+        risk: p.risk,
+        techniques: Array.from(p.counts.entries())
+          .map(([key, count]) => ({
+            label: techniques.get(key)?.label || key,
+            count,
+            risk: p.techRisk.get(key) || emptyRisk(),
+          }))
+          .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),
+      });
+    });
+    return { cards, byPlant };
+  }, [rows]);
+  const [techniquePlant, setTechniquePlant] = useState<string | null>(null);
 
   // Compute Trigger & Sub-Category AOQ Date details for current filtered rows
   const subCategoryDetails = useMemo(() => {
@@ -1020,6 +1143,7 @@ export default function AdvancedDashboard({
         <HeroStat
           label="Total Combos"
           value={stats.combo.totalAll}
+          secondary={{ value: stats.graphic.totalAll, label: "graphics" }}
           icon="📦"
           accent="#94a3b8"
           sub={`${stats.combo.dropped} dropped · ${stats.combo.hold} hold`}
@@ -1371,11 +1495,28 @@ export default function AdvancedDashboard({
               title="Color Approval"
               hint="from Strike-Off Comments · “APPROVED FOR COLOR”"
               value={stats.combo.colorApproved}
-              total={stats.combo.total}
+              total={stats.combo.approved}
+              totalLabel="approved"
               rate={stats.combo.colorRate}
               accent="#ec4899"
               icon="🎨"
               onClick={() => setApprovalGapModal("color")}
+              breakdown={[
+                {
+                  label: "Has Buy",
+                  value: stats.combo.colorByBuy.buy.color,
+                  total: stats.combo.colorByBuy.buy.approved,
+                  color: "#34d399",
+                  onClick: () => setApprovalGapModal("colorBuy"),
+                },
+                {
+                  label: "No Buy",
+                  value: stats.combo.colorByBuy.noBuy.color,
+                  total: stats.combo.colorByBuy.noBuy.approved,
+                  color: "#fb7185",
+                  onClick: () => setApprovalGapModal("colorNoBuy"),
+                },
+              ]}
             />
             <ApprovalSplitCard
               title="Placement Approval"
@@ -1454,16 +1595,188 @@ export default function AdvancedDashboard({
             </ResponsiveContainer>
           </div>
         )}
+
+        {/* WHICH PLANTS RUN EACH TECHNIQUE — one simple card per technique */}
+        {plantTechniqueMatrix.cards.length > 0 && (
+          <div className="mt-6 pt-4 border-t border-zinc-800">
+            <h4 className="text-white font-bold text-xs tracking-widest uppercase mb-1">
+              Which Plants Run Each Technique
+            </h4>
+            <p className="text-[10px] text-zinc-500 mb-3">
+              Each card is one technique and the plants doing it, with how many items each plant has.
+              Click a plant to see all its techniques. A cross-development or two-plant item
+              counts for each of its plants.
+            </p>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {Array.from(plantTechniqueMatrix.byPlant.entries())
+                .sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]))
+                .map(([plant, info]) => (
+                  <button
+                    key={plant}
+                    type="button"
+                    onClick={() => setTechniquePlant(plant)}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#0b1520] border border-zinc-700 text-xs font-bold text-zinc-200 hover:border-emerald-500 hover:text-emerald-400 transition-colors cursor-pointer"
+                    title={`See all techniques at ${plant}`}
+                  >
+                    <span>{plant}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] tabular-nums">
+                      {info.total}
+                    </span>
+                    <span className="text-[10px] font-semibold text-zinc-500">
+                      {info.techniques.length} tech
+                    </span>
+                  </button>
+                ))}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
+              {plantTechniqueMatrix.cards.map((t) => {
+                const top = t.plantList[0]?.count || 1;
+                return (
+                  <div key={t.key} className="bg-[#0b1520] border border-zinc-800 rounded-lg p-3">
+                    <div className="flex items-baseline justify-between gap-2 mb-2 pb-2 border-b border-zinc-800">
+                      <span className="text-sm font-bold text-white truncate" title={t.label}>
+                        {t.label}
+                      </span>
+                      <span className="text-[11px] text-zinc-400 whitespace-nowrap">
+                        <span className="text-white font-bold">{t.total}</span> items ·{" "}
+                        {t.plantList.length} plant{t.plantList.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <ul className="space-y-1.5">
+                      {t.plantList.map((p) => (
+                        <li key={p.plant} className="flex items-center gap-2 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => setTechniquePlant(p.plant)}
+                            className="w-32 shrink-0 truncate text-left text-zinc-300 hover:text-emerald-400 hover:underline cursor-pointer"
+                            title={`See all techniques at ${p.plant}`}
+                          >
+                            {p.plant}
+                          </button>
+                          <span className="flex-1 h-2 rounded bg-zinc-800 overflow-hidden">
+                            <span
+                              className="block h-full rounded bg-emerald-500"
+                              style={{ width: `${Math.max(4, (p.count / top) * 100)}%` }}
+                            />
+                          </span>
+                          <span className="w-8 text-right font-bold text-white tabular-nums">{p.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
         </>
       )}
+
+      {/* Plant popup — every technique the clicked plant is running */}
+      {techniquePlant && plantTechniqueMatrix.byPlant.has(techniquePlant) && (() => {
+        const info = plantTechniqueMatrix.byPlant.get(techniquePlant)!;
+        const top = info.techniques[0]?.count || 1;
+        // Same risk colours as the chart's legend.
+        const RISK_SEGMENTS = [
+          { key: "high", label: "High", color: "#ef4444" },
+          { key: "medium", label: "Medium", color: "#eab308" },
+          { key: "low", label: "Low", color: "#22c55e" },
+          { key: "unrated", label: "Unrated", color: "#3f4a58" },
+        ] as const;
+        return (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+            onClick={() => setTechniquePlant(null)}
+          >
+            <div
+              className="w-full max-w-xl max-h-[80vh] flex flex-col bg-[#101b27] border border-zinc-700 rounded-xl shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-zinc-800">
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Plant</div>
+                  <div className="text-lg font-black text-white">{techniquePlant}</div>
+                  <div className="text-[11px] text-zinc-400">
+                    <span className="text-white font-bold">{info.total}</span> items ·{" "}
+                    {info.techniques.length} technique{info.techniques.length === 1 ? "" : "s"}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {RISK_SEGMENTS.map((seg) => (
+                      <span
+                        key={seg.key}
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-zinc-700 text-[11px] text-zinc-300"
+                      >
+                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: seg.color }} />
+                        {seg.label}
+                        <span className="font-bold text-white tabular-nums">{info.risk[seg.key]}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTechniquePlant(null)}
+                  className="text-zinc-400 hover:text-white text-xl leading-none px-1"
+                  aria-label="Close"
+                >
+                  ×
+                </button>
+              </div>
+              <ul className="overflow-y-auto px-5 py-4 space-y-2">
+                {info.techniques.map((t) => (
+                  <li key={t.label} className="flex items-center gap-3 text-xs">
+                    <span className="w-40 shrink-0 truncate text-zinc-200" title={t.label}>
+                      {t.label}
+                    </span>
+                    <span className="flex-1 h-2.5 rounded bg-zinc-800 overflow-hidden">
+                      {/* bar length = item count; split into risk colours */}
+                      <span
+                        className="flex h-full rounded overflow-hidden"
+                        style={{ width: `${Math.max(4, (t.count / top) * 100)}%` }}
+                      >
+                        {RISK_SEGMENTS.map((seg) =>
+                          t.risk[seg.key] ? (
+                            <span
+                              key={seg.key}
+                              className="h-full"
+                              style={{ width: `${(t.risk[seg.key] / t.count) * 100}%`, backgroundColor: seg.color }}
+                            />
+                          ) : null,
+                        )}
+                      </span>
+                    </span>
+                    <span className="w-8 text-right font-bold text-white tabular-nums">{t.count}</span>
+                    <span className="w-28 shrink-0 flex gap-1.5 text-[10px] font-bold tabular-nums">
+                      {RISK_SEGMENTS.filter((seg) => seg.key !== "unrated" && t.risk[seg.key]).map((seg) => (
+                        <span key={seg.key} style={{ color: seg.color }} title={`${seg.label} risk`}>
+                          {seg.label[0]} {t.risk[seg.key]}
+                        </span>
+                      ))}
+                      {t.risk.unrated > 0 && (
+                        <span className="text-zinc-500" title="No risk factor set">
+                          ? {t.risk.unrated}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        );
+      })()}
 
       {approvalGapModal && (
         <ComboListModal
           title={
             approvalGapModal === "color"
               ? "Missing Color Approval"
-              : approvalGapModal === "placementNeeded"
+              : approvalGapModal === "colorBuy"
+                ? "Color Approved — Has Buy"
+                : approvalGapModal === "colorNoBuy"
+                  ? "Color Approved — No Buy"
+                  : approvalGapModal === "placementNeeded"
                 ? "Needs Placement Approval"
                 : approvalGapModal === "cp"
                   ? "C+P"
@@ -1478,12 +1791,22 @@ export default function AdvancedDashboard({
                 ? `${approvalGapLists.commentsPending.length} active combo${approvalGapLists.commentsPending.length === 1 ? "" : "s"} — strike-off gone out to NY (DHL / comment) with no verdict yet`
                 : approvalGapModal === "placementNeeded"
                   ? `${approvalGapLists.placementNeeded.length} combo${approvalGapLists.placementNeeded.length === 1 ? "" : "s"} — Tech & Layout approved, placement sign-off still pending`
-                  : undefined
+                  : approvalGapModal === "color"
+                    ? `${approvalGapLists.color.length} approved combo${approvalGapLists.color.length === 1 ? "" : "s"} still without a colour sign-off`
+                    : approvalGapModal === "colorBuy"
+                      ? `${approvalGapLists.colorBuy.length} colour-approved combo${approvalGapLists.colorBuy.length === 1 ? "" : "s"} that came for the buy`
+                      : approvalGapModal === "colorNoBuy"
+                        ? `${approvalGapLists.colorNoBuy.length} colour-approved combo${approvalGapLists.colorNoBuy.length === 1 ? "" : "s"} with no buy`
+                        : undefined
           }
           rows={
             approvalGapModal === "color"
               ? approvalGapLists.color
-              : approvalGapModal === "placementNeeded"
+              : approvalGapModal === "colorBuy"
+                ? approvalGapLists.colorBuy
+                : approvalGapModal === "colorNoBuy"
+                  ? approvalGapLists.colorNoBuy
+                  : approvalGapModal === "placementNeeded"
                 ? approvalGapLists.placementNeeded
                 : approvalGapModal === "cp"
                   ? approvalGapLists.cp
@@ -1506,12 +1829,15 @@ function HeroStat({
   sub,
   icon,
   accent,
+  secondary,
 }: {
   label: string;
   value: number;
   sub?: string;
   icon: string;
   accent: string;
+  // Optional second figure shown beside the main value (e.g. graphic count next to combos).
+  secondary?: { value: number; label: string };
 }) {
   return (
     <div
@@ -1538,6 +1864,14 @@ function HeroStat({
             style={{ color: accent }}
           >
             {value.toLocaleString()}
+            {secondary && (
+              <span className="ml-3 text-base font-bold text-zinc-300">
+                {secondary.value.toLocaleString()}
+                <span className="ml-1 text-[10px] font-sans font-bold uppercase tracking-widest text-zinc-500">
+                  {secondary.label}
+                </span>
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -1666,6 +2000,8 @@ function ApprovalSplitCard({
   onClick,
   footer,
   tooltip,
+  totalLabel = "active",
+  breakdown,
 }: {
   title: string;
   hint: string;
@@ -1680,6 +2016,9 @@ function ApprovalSplitCard({
   // opens the "cleared Tech & Layout, now needs placement sign-off" work list).
   footer?: string;
   tooltip?: string;
+  totalLabel?: string;
+  // Optional sub-counts shown under the bar (Color Approval: Has Buy / No Buy).
+  breakdown?: { label: string; value: number; total: number; color: string; onClick?: () => void }[];
 }) {
   const missing = Math.max(0, total - value);
   const footerText = footer ?? `${missing} missing — click to view →`;
@@ -1716,7 +2055,7 @@ function ApprovalSplitCard({
           <div className="text-2xl font-mono font-extrabold" style={{ color: accent }}>
             {value}
           </div>
-          <div className="text-[9px] text-zinc-500 font-mono">/ {total} active</div>
+          <div className="text-[9px] text-zinc-500 font-mono">/ {total} {totalLabel}</div>
         </div>
       </div>
       <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
@@ -1725,6 +2064,54 @@ function ApprovalSplitCard({
           style={{ width: `${Math.min(100, rate)}%`, backgroundColor: accent }}
         />
       </div>
+      {breakdown && breakdown.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 mt-2">
+          {breakdown.map((b) => (
+            // A div, not a <button>: the whole card is already a button (no nested buttons).
+            // stopPropagation so clicking a box opens ITS list, not the card's own list.
+            <div
+              key={b.label}
+              role={b.onClick ? "button" : undefined}
+              tabIndex={b.onClick ? 0 : undefined}
+              onClick={
+                b.onClick
+                  ? (e) => {
+                      e.stopPropagation();
+                      b.onClick!();
+                    }
+                  : undefined
+              }
+              onKeyDown={
+                b.onClick
+                  ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        b.onClick!();
+                      }
+                    }
+                  : undefined
+              }
+              className={`rounded-md border border-zinc-800 bg-black/20 px-2 py-1.5 ${
+                b.onClick ? "cursor-pointer hover:border-zinc-500" : ""
+              }`}
+              title={
+                b.onClick
+                  ? `Click to see the ${b.value} colour-approved combo${b.value === 1 ? "" : "s"} with ${b.label}`
+                  : `${b.label}: ${b.value} of ${b.total} approved combo${b.total === 1 ? "" : "s"} colour-approved`
+              }
+            >
+              <div className="text-[9px] font-bold uppercase tracking-wide" style={{ color: b.color }}>
+                {b.label}
+              </div>
+              <div className="font-mono text-sm font-extrabold text-white">
+                {b.value}
+                <span className="text-[9px] font-normal text-zinc-500"> / {b.total} approved</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex items-center justify-between mt-1">
         {onClick && (
           <span className="text-[10px] text-zinc-500">
