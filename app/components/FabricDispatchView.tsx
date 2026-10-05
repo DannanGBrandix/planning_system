@@ -327,13 +327,13 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
     collect(groupedSampleSewingData);
 
     // Split into two pools using the category the row is actually PLANNED as
-    // (getPlanningCategory = APPLICATION FORM / S-Off Requirement, with the CK-as-fabric rule
+    // (getPlanningCategory = APPLICATION FORM / S-Off Requirement, with the BABL/AV-as-fabric rule
     // applied) — the field that says what KIND of item this is, independent of which specific
     // event is scheduled on this particular date:
     //  - GARMENTS / MOCK-UPS  -> get their own tab PER PLANT (garmentMockupItems)
     //  - everything else (fabric, cut panels, fit functionals, ...) -> ONE combined sheet
     //    (fabricItems), matching the reference "Event_Summary" layout.
-    // Routing on the RAW Application Form put CK garment/mock-up rows on a per-plant GARMENT tab
+    // Routing on the RAW Application Form put BABL/AV garment/mock-up rows on a per-plant GARMENT tab
     // even though they are planned the fabric way (FS -> FR -> ...), splitting their FS lines off
     // the Fabric Dispatch sheet where the rest of the fabric plan lives.
     const garmentMockupItems: DispatchItem[] = [];
