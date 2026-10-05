@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { EmbellishmentRow, getRowStatus, isRowSent, getGroupStatus, groupRowsByCombo, hasColorApproval, hasPlacementApproval, hasStrikeOffSubmission, hasBuy } from "../lib/db";
 import ComboListModal from "./ComboListModal";
 import { isCkFamilyCategory } from "../lib/ckCategories";
+import { techniqueGroupOf } from "../lib/techniqueGroups";
 import {
   PieChart,
   Pie,
@@ -33,6 +34,18 @@ function techniqueCategoryOf(r: EmbellishmentRow): { key: string; label: string 
   const raw = String(r.col18 || "").replace(/\s+/g, " ").trim();
   const label = raw.replace(/^\d+\s*[.)\-:]?\s*/, "").trim() || raw;
   return label ? { key: label.toUpperCase(), label } : null;
+}
+
+// The chart, the plant cards and the plant popup show the planner's 8 top-level technique groups
+// (PRINT, EMBROIDERY, … see lib/techniqueGroups) instead of every detailed Technique Category;
+// the detailed names are kept as `detail` and listed inside each group's card.
+function techniqueGroupForRow(
+  r: EmbellishmentRow,
+): { key: string; label: string; order: number; detail: { key: string; label: string } } | null {
+  const tc = techniqueCategoryOf(r);
+  if (!tc) return null;
+  const g = techniqueGroupOf(tc.key);
+  return { key: g.label, label: g.order < 99 ? `${g.order}. ${g.label}` : g.label, order: g.order, detail: tc };
 }
 
 // Helper: detect if a row has "C+P SP" style comment in strike-off fields
@@ -676,7 +689,7 @@ export default function AdvancedDashboard({
     >();
 
     rows.forEach((r) => {
-      const tc = techniqueCategoryOf(r);
+      const tc = techniqueGroupForRow(r);
       if (!tc) return;
       const technique = tc.label;
       const techniqueKey = tc.key;
@@ -714,7 +727,7 @@ export default function AdvancedDashboard({
       .map((e) => {
         const total = e.high + e.medium + e.low + e.unspecified;
         return {
-          technique: `${truncate(e.technique, 26)} (${total})`,
+          technique: `${truncate(e.technique, 36)} (${total})`,
           fullTechnique: e.technique,
           high: e.high,
           medium: e.medium,
@@ -737,14 +750,34 @@ export default function AdvancedDashboard({
   const plantTechniqueMatrix = useMemo(() => {
     type RiskCounts = { high: number; medium: number; low: number; unrated: number };
     const emptyRisk = (): RiskCounts => ({ high: 0, medium: 0, low: 0, unrated: 0 });
-    const techniques = new Map<string, { label: string; total: number }>();
+    type TechItem = {
+      graphic: string;
+      combo: string;
+      style: string;
+      details: Set<string>;
+      items: number;
+      risk: RiskCounts;
+    };
+    const techniques = new Map<
+      string,
+      { label: string; order: number; total: number; details: Map<string, { label: string; count: number }> }
+    >();
     const plants = new Map<
       string,
-      { plant: string; total: number; counts: Map<string, number>; risk: RiskCounts; techRisk: Map<string, RiskCounts> }
+      {
+        plant: string;
+        total: number;
+        counts: Map<string, number>;
+        risk: RiskCounts;
+        techRisk: Map<string, RiskCounts>;
+        // Items behind each group at this plant (for the popup's drill-down), keyed by group, then
+        // by Graphic + Combo + Style.
+        techItems: Map<string, Map<string, TechItem>>;
+      }
     >();
 
     rows.forEach((r) => {
-      const tc = techniqueCategoryOf(r);
+      const tc = techniqueGroupForRow(r);
       if (!tc) return;
       // Risk Factor (col17) — same buckets as the chart above.
       const riskRaw = String(r.col17 || "").trim().toUpperCase();
@@ -759,12 +792,25 @@ export default function AdvancedDashboard({
       if (rowPlants.length === 0) rowPlants = extractPlants(plantFromFlow(r.col12 as string | null | undefined));
       if (rowPlants.length === 0) rowPlants = ["Unassigned"];
 
-      if (!techniques.has(tc.key)) techniques.set(tc.key, { label: tc.label, total: 0 });
-      techniques.get(tc.key)!.total += 1;
+      if (!techniques.has(tc.key)) {
+        techniques.set(tc.key, { label: tc.label, order: tc.order, total: 0, details: new Map() });
+      }
+      const tech = techniques.get(tc.key)!;
+      tech.total += 1;
+      const detail = tech.details.get(tc.detail.key) || { label: tc.detail.label, count: 0 };
+      detail.count += 1;
+      tech.details.set(tc.detail.key, detail);
 
       rowPlants.forEach((plant) => {
         if (!plants.has(plant)) {
-          plants.set(plant, { plant, total: 0, counts: new Map(), risk: emptyRisk(), techRisk: new Map() });
+          plants.set(plant, {
+            plant,
+            total: 0,
+            counts: new Map(),
+            risk: emptyRisk(),
+            techRisk: new Map(),
+            techItems: new Map(),
+          });
         }
         const entry = plants.get(plant)!;
         entry.total += 1;
@@ -772,25 +818,61 @@ export default function AdvancedDashboard({
         entry.risk[risk] += 1;
         if (!entry.techRisk.has(tc.key)) entry.techRisk.set(tc.key, emptyRisk());
         entry.techRisk.get(tc.key)![risk] += 1;
+
+        // Graphic (col7) + Combo (col6) + Style (col5) — one line per distinct combination.
+        if (!entry.techItems.has(tc.key)) entry.techItems.set(tc.key, new Map());
+        const graphic = String(r.col7 || "").trim();
+        const combo = String(r.col6 || "").trim();
+        const style = String(r.col5 || "").trim();
+        const itemKey = `${graphic}\u0000${combo}\u0000${style}`;
+        const byItem = entry.techItems.get(tc.key)!;
+        if (!byItem.has(itemKey)) {
+          byItem.set(itemKey, { graphic, combo, style, details: new Set(), items: 0, risk: emptyRisk() });
+        }
+        const it = byItem.get(itemKey)!;
+        it.items += 1;
+        it.details.add(tc.detail.label);
+        it.risk[risk] += 1;
       });
     });
 
-    // One card per technique, same order as the chart (by item count), each listing its plants
-    // busiest-first.
+    // One card per technique group, in the reference table's 1–8 order (OTHER last), each listing
+    // the detailed techniques it covers and its plants busiest-first.
     const cards = Array.from(techniques.entries())
       .map(([key, v]) => {
         const plantList = Array.from(plants.values())
           .map((p) => ({ plant: p.plant, count: p.counts.get(key) || 0 }))
           .filter((p) => p.count > 0)
           .sort((a, b) => b.count - a.count || a.plant.localeCompare(b.plant));
-        return { key, label: v.label, total: v.total, plantList };
+        const details = Array.from(v.details.values()).sort(
+          (a, b) => b.count - a.count || a.label.localeCompare(b.label),
+        );
+        return { key, label: v.label, order: v.order, total: v.total, details, plantList };
       })
-      .sort((a, b) => b.total - a.total);
+      .sort((a, b) => a.order - b.order || b.total - a.total);
 
     // Reverse view for the plant popup (click a plant name): that plant's techniques, busiest first.
     const byPlant = new Map<
       string,
-      { total: number; risk: RiskCounts; techniques: { label: string; count: number; risk: RiskCounts }[] }
+      {
+        total: number;
+        risk: RiskCounts;
+        techniques: {
+          key: string;
+          label: string;
+          count: number;
+          risk: RiskCounts;
+          items: {
+            key: string;
+            graphic: string;
+            combo: string;
+            style: string;
+            details: string[];
+            items: number;
+            risk: RiskCounts;
+          }[];
+        }[];
+      }
     >();
     plants.forEach((p) => {
       byPlant.set(p.plant, {
@@ -798,16 +880,41 @@ export default function AdvancedDashboard({
         risk: p.risk,
         techniques: Array.from(p.counts.entries())
           .map(([key, count]) => ({
+            key,
             label: techniques.get(key)?.label || key,
+            order: techniques.get(key)?.order ?? 99,
             count,
             risk: p.techRisk.get(key) || emptyRisk(),
+            items: Array.from(p.techItems.get(key)?.entries() || [])
+              .map(([itemKey, it]) => ({
+                key: itemKey,
+                graphic: it.graphic,
+                combo: it.combo,
+                style: it.style,
+                details: Array.from(it.details).sort(),
+                items: it.items,
+                risk: it.risk,
+              }))
+              .sort(
+                (a, b) =>
+                  a.graphic.localeCompare(b.graphic) ||
+                  a.combo.localeCompare(b.combo) ||
+                  a.style.localeCompare(b.style),
+              ),
           }))
-          .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label)),
+          .sort((a, b) => a.order - b.order),
       });
     });
     return { cards, byPlant };
   }, [rows]);
   const [techniquePlant, setTechniquePlant] = useState<string | null>(null);
+  // Technique group expanded in the plant popup to list its Graphic / Combo / Style lines.
+  // Clicking a plant inside a group's card opens the popup with that group already expanded.
+  const [techniquePlantGroup, setTechniquePlantGroup] = useState<string | null>(null);
+  const openTechniquePlant = (plant: string, groupKey: string | null = null) => {
+    setTechniquePlant(plant);
+    setTechniquePlantGroup(groupKey);
+  };
 
   // Compute Trigger & Sub-Category AOQ Date details for current filtered rows
   const subCategoryDetails = useMemo(() => {
@@ -1572,7 +1679,7 @@ export default function AdvancedDashboard({
                   stroke="#a1a1aa"
                   fontSize={11}
                   fontWeight={600}
-                  width={210}
+                  width={270}
                   interval={0}
                 />
                 <Tooltip
@@ -1603,7 +1710,8 @@ export default function AdvancedDashboard({
               Which Plants Run Each Technique
             </h4>
             <p className="text-[10px] text-zinc-500 mb-3">
-              Each card is one technique and the plants doing it, with how many items each plant has.
+              Each card is one technique group (the detailed techniques it covers are listed under its
+              name) and the plants doing it, with how many items each plant has.
               Click a plant to see all its techniques. A cross-development or two-plant item
               counts for each of its plants.
             </p>
@@ -1614,7 +1722,7 @@ export default function AdvancedDashboard({
                   <button
                     key={plant}
                     type="button"
-                    onClick={() => setTechniquePlant(plant)}
+                    onClick={() => openTechniquePlant(plant)}
                     className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#0b1520] border border-zinc-700 text-xs font-bold text-zinc-200 hover:border-emerald-500 hover:text-emerald-400 transition-colors cursor-pointer"
                     title={`See all techniques at ${plant}`}
                   >
@@ -1642,14 +1750,23 @@ export default function AdvancedDashboard({
                         {t.plantList.length} plant{t.plantList.length === 1 ? "" : "s"}
                       </span>
                     </div>
+                    {/* Detailed techniques folded into this group, busiest first */}
+                    <div className="mb-2 pb-2 border-b border-zinc-800 text-[10px] leading-relaxed text-zinc-400">
+                      {t.details.map((d, i) => (
+                        <span key={d.label}>
+                          {i > 0 && ", "}
+                          {d.label} <span className="text-zinc-500 tabular-nums">({d.count})</span>
+                        </span>
+                      ))}
+                    </div>
                     <ul className="space-y-1.5">
                       {t.plantList.map((p) => (
                         <li key={p.plant} className="flex items-center gap-2 text-xs">
                           <button
                             type="button"
-                            onClick={() => setTechniquePlant(p.plant)}
+                            onClick={() => openTechniquePlant(p.plant, t.key)}
                             className="w-32 shrink-0 truncate text-left text-zinc-300 hover:text-emerald-400 hover:underline cursor-pointer"
-                            title={`See all techniques at ${p.plant}`}
+                            title={`See the ${t.label} graphics at ${p.plant}`}
                           >
                             {p.plant}
                           </button>
@@ -1690,7 +1807,7 @@ export default function AdvancedDashboard({
             onClick={() => setTechniquePlant(null)}
           >
             <div
-              className="w-full max-w-xl max-h-[80vh] flex flex-col bg-[#101b27] border border-zinc-700 rounded-xl shadow-2xl"
+              className="w-full max-w-4xl max-h-[85vh] flex flex-col bg-[#101b27] border border-zinc-700 rounded-xl shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-zinc-800">
@@ -1723,10 +1840,22 @@ export default function AdvancedDashboard({
                   ×
                 </button>
               </div>
-              <ul className="overflow-y-auto px-5 py-4 space-y-2">
-                {info.techniques.map((t) => (
-                  <li key={t.label} className="flex items-center gap-3 text-xs">
-                    <span className="w-40 shrink-0 truncate text-zinc-200" title={t.label}>
+              <div className="px-5 pt-3 text-[10px] text-zinc-500">
+                Click a technique group to see its graphics, combos and styles.
+              </div>
+              <ul className="overflow-y-auto px-5 py-3 space-y-2">
+                {info.techniques.map((t) => {
+                  const expanded = techniquePlantGroup === t.key;
+                  return (
+                  <li key={t.key}>
+                  <button
+                    type="button"
+                    onClick={() => setTechniquePlantGroup(expanded ? null : t.key)}
+                    className={`w-full flex items-center gap-3 text-xs rounded px-1 py-0.5 cursor-pointer hover:bg-white/5 ${expanded ? "bg-white/5" : ""}`}
+                    title={expanded ? "Hide graphics" : "Show graphics, combos and styles"}
+                  >
+                    <span className="w-3 shrink-0 text-zinc-500">{expanded ? "▾" : "▸"}</span>
+                    <span className="w-40 shrink-0 truncate text-left text-zinc-200" title={t.label}>
                       {t.label}
                     </span>
                     <span className="flex-1 h-2.5 rounded bg-zinc-800 overflow-hidden">
@@ -1759,8 +1888,56 @@ export default function AdvancedDashboard({
                         </span>
                       )}
                     </span>
+                  </button>
+                  {expanded && (
+                    <div className="mt-2 mb-3 ml-4 border border-zinc-800 rounded-lg overflow-hidden">
+                      <table className="w-full text-[11px]">
+                        <thead className="bg-[#0b1520] text-zinc-500 uppercase tracking-wider text-[9px]">
+                          <tr>
+                            <th className="text-left font-bold px-2.5 py-1.5">Graphic</th>
+                            <th className="text-left font-bold px-2.5 py-1.5">Combo</th>
+                            <th className="text-left font-bold px-2.5 py-1.5">Style</th>
+                            <th className="text-left font-bold px-2.5 py-1.5">Technique</th>
+                            <th className="text-left font-bold px-2.5 py-1.5">Risk</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {t.items.map((it) => (
+                            <tr key={it.key} className="border-t border-zinc-800">
+                              <td className="px-2.5 py-1.5 font-mono font-bold text-amber-300 whitespace-nowrap">
+                                {it.graphic || "—"}
+                              </td>
+                              <td className="px-2.5 py-1.5 text-zinc-300 whitespace-nowrap">{it.combo || "—"}</td>
+                              <td className="px-2.5 py-1.5 font-mono text-zinc-300 whitespace-nowrap">
+                                {it.style || "—"}
+                                {it.items > 1 && (
+                                  <span className="ml-1 text-zinc-500" title="Rows with this Graphic + Combo + Style">
+                                    ×{it.items}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-2.5 py-1.5 text-zinc-400">{it.details.join(", ")}</td>
+                              <td className="px-2.5 py-1.5 whitespace-nowrap">
+                                <span className="flex gap-1.5 text-[10px] font-bold tabular-nums">
+                                  {RISK_SEGMENTS.filter((seg) => seg.key !== "unrated" && it.risk[seg.key]).map((seg) => (
+                                    <span key={seg.key} style={{ color: seg.color }} title={`${seg.label} risk`}>
+                                      {seg.label}
+                                    </span>
+                                  ))}
+                                  {it.risk.unrated > 0 && (
+                                    <span className="text-zinc-500" title="No risk factor set">—</span>
+                                  )}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             </div>
           </div>
