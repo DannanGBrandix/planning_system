@@ -1433,10 +1433,20 @@ export function hasBuy(r: EmbellishmentRow): boolean {
 // Substring match, case-insensitive, so "TRIAL", "Trial Only", etc. all match. Every other
 // view (Dashboard, Table, Action Center, ...) keeps these rows — only Advanced Analytics
 // (and the DashboardStats tile that deliberately mirrors it, see below) drops them.
-const ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES = ["branding", "trial"];
+// "dev" (added 2026-10-06): DEV development graphics ("H27_DEV_011", "GPH27_DEV") — also caught
+// by the graphic number itself (DEV_GRAPHIC_RE) so a new DEV row with a blank Graphic Type is
+// excluded without anyone having to tag it first.
+const ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES = ["branding", "trial", "dev"];
+const DEV_GRAPHIC_RE = /(^|[^A-Z])DEV([^A-Z]|$)/i;
+export function isDevGraphic(graphic: unknown): boolean {
+  return DEV_GRAPHIC_RE.test(String(graphic || ""));
+}
 export function isExcludedFromAdvancedAnalytics(r: EmbellishmentRow): boolean {
   const graphicType = String(r.col19 || "").toLowerCase();
-  return ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES.some((t) => graphicType.includes(t));
+  return (
+    ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES.some((t) => graphicType.includes(t)) ||
+    isDevGraphic(r.col7)
+  );
 }
 
 // col20 (Strike off Aesthetic Approval / Dropped) holds two very different kinds of content: an
