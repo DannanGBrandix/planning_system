@@ -5363,11 +5363,14 @@ export default function Home() {
     // Trigger is explicitly picked: standard dashboard via selectedTriggerFilter (above),
     // advanced view via the sidebar Trigger multi-select (advancedSelections.trigger, applied
     // further down). See isHiddenEventTrigger.
+    // Operational views (Fabric Dispatch, Plant Schedules) are the exception: a Super Bowl FS /
+    // PPS is still real work a plant has to do, so it must always appear there.
+    const operationalView = viewMode === "fabricDispatch" || viewMode === "plantSchedules";
     const aTriggerPicked =
       viewMode === "advanced"
         ? advancedSelections.trigger.length > 0
         : !!selectedTriggerFilter;
-    if (!aTriggerPicked) {
+    if (!aTriggerPicked && !operationalView) {
       result = result.filter((row) => !isHiddenEventTrigger(row.col2));
     }
 
