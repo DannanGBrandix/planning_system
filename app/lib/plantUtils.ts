@@ -81,6 +81,7 @@ const CANONICAL_PLANTS: Record<string, string> = {
   "REGAL": "REGAL IMAGE",
   "REGAL IMAGE": "REGAL IMAGE",
   "REGAL IMAGES": "REGAL IMAGE",
+  "REGALIMAGE": "REGAL IMAGE", // no-space spelling used as a cross-dev leg key ("<date>_REGALIMAGE")
   "REEGAL": "REGAL IMAGE",
   "REEGAL IMAGE": "REGAL IMAGE",
   "INNER HOOD-REGAL": "REGAL IMAGE",

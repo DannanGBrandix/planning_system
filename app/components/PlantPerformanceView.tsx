@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { EmbellishmentRow, getRowStatus, getPlantAliasConfig, getSeasonAoqConfig, SeasonAoqMap, getTriggerCatalog, TriggerCatalogEntry } from "../lib/db";
 import { parseEventValue, getReasonByCode } from "../lib/eventCodes";
-import { applyPlantAliasConfig, getPlantAliasRuntimeConfig, resolvePlantDateTargets } from "../lib/plantUtils";
+import { applyPlantAliasConfig, getPlantAliasRuntimeConfig, resolvePlantDateTargets, extractPlants, splitLegPlants } from "../lib/plantUtils";
 import { seasonBase } from "../lib/triggerUtils";
 import { resolveGraphicAoqVerdict, AoqVerdict } from "../lib/nycVerdict";
 import ExcelJS from "exceljs";
@@ -194,6 +194,25 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
       const inactive = (() => { const st = getRowStatus(r); return st === "dropped" || st === "hold"; })();
 
       const rec = r as unknown as Record<string, unknown>;
+      // Plants still named in PLANT (col11). A "<date>_<leg>" key whose leg was dropped from
+      // col11 (e.g. "ANTELR/REGAL/EXPO" later changed to "EXPO") is left-over data the planner
+      // no longer shows — its never-updated planned PPS must not count as the plant's overdue.
+      const col11 = String(r.col11 || "");
+      const letters = (p: string) => p.toUpperCase().replace(/[^A-Z]/g, "");
+      const currentPlants = [
+        ...extractPlants(col11),
+        ...col11.replace(/\(.*?\)/g, " ").split(/\/|>>|>|\+/).flatMap((g) => (g.trim() ? splitLegPlants(g.trim()) : [])),
+      ].map(letters).filter(Boolean);
+      // Loose match: "REGAL" and "REGALIMAGE" are the same plant spelled two ways.
+      const isCurrentPlant = (p: string) => {
+        const l = letters(p);
+        return !!l && currentPlants.some((c) => c.startsWith(l) || l.startsWith(c));
+      };
+      const isStaleLeg = (fieldKey: string) => {
+        const suffix = fieldKey.match(dateKeyRe) ? fieldKey.slice(11) : "";
+        if (!suffix || !currentPlants.length) return false;
+        return !splitLegPlants(suffix).every(isCurrentPlant);
+      };
       const isos = new Set<string>();
       Object.keys(rec).forEach((k) => {
         const m = k.match(dateKeyRe);
@@ -211,6 +230,7 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
           // An archived version's plan was superseded by the next version — only the PPS results
           // it actually recorded count; a never-done planned PPS is not the plant's miss.
           if (parsed.status === "planned" && r.is_current === false) return;
+          if (parsed.status === "planned" && isStaleLeg(t.fieldKey)) return;
           const plant = t.plant.toUpperCase();
           if (excluded.has(plant)) return;
 
