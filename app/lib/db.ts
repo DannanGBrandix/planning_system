@@ -1342,6 +1342,17 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
 
   const isExplicitCP = c20 === 'C+P' || c1 === 'C+P';
 
+  // 0. A Status (col1) the planner set by hand to Approved / Dropped outranks a stale
+  // "Resubmit Needed" left in col20 — otherwise changing Status Resubmit → Approved in the
+  // edit modal saves but the badge never moves (col20 still says RESUB).
+  const isStatusDropped = c1 === 'D' || c1.includes('DROPPED') || c1.includes('DROP') || c1.includes('REALLOCATED');
+  if (isStatusDropped) {
+    return 'dropped';
+  }
+  if (isStatusApproved) {
+    return 'approved';
+  }
+
   // 1. Check explicitly provided status in col20 or col1 first (highest priority)
   if (isExplicitResubmit) {
     return 'resubmit';

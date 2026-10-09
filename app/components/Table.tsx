@@ -34,6 +34,7 @@ import { parseEventValue } from "../lib/eventCodes";
 import { findTriggerCatalogAoq } from "../lib/nycVerdict";
 import { calculateTargetSendDate, parseCrossDevGroups, legPlantFlow } from "../lib/plantUtils";
 import { isSriLankaHoliday, getSriLankaHolidayName } from "../lib/sriLankaHolidays";
+import { isColorReplanDate } from "../lib/colorApprovalReplan";
 import DailyEventsExport from "./DailyEventsExport";
 import EmbellishmentPlanExport from "./EmbellishmentPlanExport";
 
@@ -238,7 +239,13 @@ interface TableProps {
   onForceReplan?: (rowId: string) => void;
   onNewVersion?: (row: EmbellishmentRow) => void;
   onClearRowPlan?: (rowId: string, legPlant?: string) => void | Promise<boolean | void>;
-  onSetPlanStartDate?: (rowId: string, startDateKey: string, legPlant?: string) => void;
+  onSetPlanStartDate?: (
+    rowId: string,
+    startDateKey: string,
+    legPlant?: string,
+    flowId?: number,
+    options?: { colorApproval?: boolean },
+  ) => void;
   onApplyPlanFlow?: (rowId: string, dateKey: string, flowId: number) => void | Promise<void>;
   onAddRow: () => void;
   onPublishRow: (row: EmbellishmentRow) => void;
@@ -256,7 +263,6 @@ export default function Table({
   onDeleteRow,
   onDeleteMultipleRows,
   onDuplicateRow,
-  onForceReplan,
   onNewVersion,
   onClearRowPlan,
   onSetPlanStartDate,
@@ -324,13 +330,16 @@ export default function Table({
   // When the pending replan is scoped to a single cross-dev plant leg, its name is held here;
   // null means "the whole row".
   const [replanAnchorLeg, setReplanAnchorLeg] = useState<string | null>(null);
+  // The pending replan is a colour-approval ("final chop") run: nothing is cleared, the earlier
+  // plan stays, and the new run is left out of Plant Performance (lib/colorApprovalReplan.ts).
+  const [replanColorApproval, setReplanColorApproval] = useState(false);
 
   // Let Escape cancel an in-progress "pick a start date" instead of leaving the row stuck
   // waiting for a click that may never come.
   useEffect(() => {
     if (!replanAnchorRowId) return;
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { setReplanAnchorRowId(null); setReplanAnchorLeg(null); }
+      if (e.key === "Escape") { setReplanAnchorRowId(null); setReplanAnchorLeg(null); setReplanColorApproval(false); }
     };
     document.addEventListener("keydown", handleEsc);
     return () => document.removeEventListener("keydown", handleEsc);
@@ -1391,7 +1400,7 @@ export default function Table({
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (armed) { setReplanAnchorRowId(null); setReplanAnchorLeg(null); return; }
+                        if (armed) { setReplanAnchorRowId(null); setReplanAnchorLeg(null); setReplanColorApproval(false); return; }
                         if (!window.confirm(
                           `Clear ${legPlant}'s planning events only (other plants untouched)? ` +
                           `You'll then click a date on ${legPlant}'s row to set its new start.`,
@@ -1399,6 +1408,7 @@ export default function Table({
                         onClearRowPlan(row.id, legPlant);
                         setReplanAnchorRowId(row.id);
                         setReplanAnchorLeg(legPlant);
+                        setReplanColorApproval(false);
                       }}
                       title={armed ? `Click a date on ${legPlant}'s row (click again to cancel)` : `Clear + replan ${legPlant} only`}
                       className={`text-[8px] leading-none px-1 py-0.5 rounded border font-black transition-colors ${
@@ -2060,9 +2070,16 @@ export default function Table({
                         key={dateKey}
                         onClick={() => {
                           if (replanAnchorRowId === row.id) {
-                            onSetPlanStartDate?.(row.id, date.key, replanAnchorLeg ?? undefined);
+                            onSetPlanStartDate?.(
+                              row.id,
+                              date.key,
+                              replanAnchorLeg ?? undefined,
+                              undefined,
+                              replanColorApproval ? { colorApproval: true } : undefined,
+                            );
                             setReplanAnchorRowId(null);
                             setReplanAnchorLeg(null);
+                            setReplanColorApproval(false);
                             return;
                           }
                           if (isEditable) {
@@ -2086,10 +2103,18 @@ export default function Table({
                             : isEditable
                             ? "cursor-pointer hover:brightness-110"
                             : "cursor-not-allowed"
-                        } ${cellBgClass}`}
+                        } ${cellBgClass}${
+                          value && isColorReplanDate(row as Record<string, unknown>, date.key)
+                            ? " shadow-[inset_0_3px_0_0_#2dd4bf]"
+                            : ""
+                        }`}
                         title={
                           replanAnchorRowId === row.id
-                            ? `Click to set ${date.label} as the new plan start date`
+                            ? replanColorApproval
+                              ? `Click to start the colour approval plan on ${date.label}`
+                              : `Click to set ${date.label} as the new plan start date`
+                            : value && isColorReplanDate(row as Record<string, unknown>, date.key)
+                            ? `${eventStyle?.tooltip || ""} · Colour approval replan — not counted in Plant Performance`.replace(/^ · /, "")
                             : eventStyle?.tooltip || (isEditable ? "Click to set event status" : "Read-only")
                         }
                       >
@@ -2166,26 +2191,6 @@ export default function Table({
                             <path strokeLinecap="round" strokeLinejoin="round" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2" />
                           </svg>
                         </button>
-                        <button
-                          onClick={() => setViewRow(row)}
-                          className="p-1 text-slate-400 hover:text-emerald-400 hover:bg-emerald-950/40 rounded-md transition-colors"
-                          title="Edit / View Details"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                          </svg>
-                        </button>
-                        {onForceReplan && (
-                          <button
-                            onClick={() => onForceReplan(row.id)}
-                            className="p-1 text-slate-400 hover:text-amber-400 hover:bg-amber-950/40 rounded-md transition-colors"
-                            title="Replan (Same Data) — e.g. after C+P / Resubmission: re-runs the schedule from today, keeping this item's data as-is"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                            </svg>
-                          </button>
-                        )}
                         {onNewVersion && (
                           <button
                             onClick={() => onNewVersion(row)}
@@ -2204,6 +2209,7 @@ export default function Table({
                                 // Already waiting for a date on this row — press again to cancel.
                                 setReplanAnchorRowId(null);
                                 setReplanAnchorLeg(null);
+                                setReplanColorApproval(false);
                                 return;
                               }
                               // Any dated event ANYWHERE on the row — not just in the visible
@@ -2220,14 +2226,15 @@ export default function Table({
                               if (cleared === false) return;
                               setReplanAnchorRowId(row.id);
                               setReplanAnchorLeg(null);
+                              setReplanColorApproval(false);
                             }}
                             className={`p-1 rounded-md transition-colors ${
-                              replanAnchorRowId === row.id
+                              replanAnchorRowId === row.id && !replanColorApproval
                                 ? "text-amber-300 bg-amber-500/20 animate-pulse"
                                 : "text-slate-400 hover:text-amber-400 hover:bg-amber-950/40"
                             }`}
                             title={
-                              replanAnchorRowId === row.id
+                              replanAnchorRowId === row.id && !replanColorApproval
                                 ? "Click a date on this row to set the new start date (click again to cancel)"
                                 : "Clear planning events, then pick a new start date — replans automatically from that date onward"
                             }
@@ -2238,6 +2245,38 @@ export default function Table({
                             </svg>
                           </button>
                         )}
+                        {onSetPlanStartDate && (() => {
+                          const armed = replanAnchorRowId === row.id && replanColorApproval;
+                          return (
+                            <button
+                              onClick={() => {
+                                if (armed) {
+                                  setReplanAnchorRowId(null);
+                                  setReplanAnchorLeg(null);
+                                  setReplanColorApproval(false);
+                                  return;
+                                }
+                                setReplanAnchorRowId(row.id);
+                                setReplanAnchorLeg(null);
+                                setReplanColorApproval(true);
+                              }}
+                              className={`p-1 rounded-md transition-colors ${
+                                armed
+                                  ? "text-teal-300 bg-teal-500/20 animate-pulse"
+                                  : "text-slate-400 hover:text-teal-400 hover:bg-teal-950/40"
+                              }`}
+                              title={
+                                armed
+                                  ? "Click a date on this row to start the colour approval plan (click again to cancel)"
+                                  : "Colour approval replan (final chop) — keeps the existing plan and adds a new plan (up to PPS, no NY) from the date you pick. The new plan is NOT counted in Plant Performance."
+                              }
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M4.098 19.902a3.75 3.75 0 005.304 0l6.401-6.402M6.75 21A3.75 3.75 0 013 17.25V4.125C3 3.504 3.504 3 4.125 3h5.25c.621 0 1.125.504 1.125 1.125v4.072M6.75 21a3.75 3.75 0 003.75-3.75V8.197M6.75 21h13.125c.621 0 1.125-.504 1.125-1.125v-5.25c0-.621-.504-1.125-1.125-1.125h-4.072M10.5 8.197l2.88-2.88c.438-.439 1.15-.439 1.59 0l3.712 3.713c.44.44.44 1.152 0 1.59l-2.879 2.88M6.75 17.25h.008v.008H6.75v-.008z" />
+                              </svg>
+                            </button>
+                          );
+                        })()}
                         <button
                           onClick={() => {
                             if (window.confirm("Are you sure you want to delete this planning item?")) {
@@ -2305,9 +2344,16 @@ export default function Table({
                           key={dateKey}
                           onClick={() => {
                             if (replanAnchorRowId === row.id) {
-                              onSetPlanStartDate?.(row.id, date.key, replanAnchorLeg ?? undefined);
+                              onSetPlanStartDate?.(
+                                row.id,
+                                date.key,
+                                replanAnchorLeg ?? undefined,
+                                undefined,
+                                replanColorApproval ? { colorApproval: true } : undefined,
+                              );
                               setReplanAnchorRowId(null);
                               setReplanAnchorLeg(null);
+                              setReplanColorApproval(false);
                               return;
                             }
                             if (isEditable) {
@@ -2331,10 +2377,18 @@ export default function Table({
                               : isEditable
                               ? "cursor-pointer hover:brightness-110"
                               : "cursor-not-allowed"
-                          } ${cellBgClass}`}
+                          } ${cellBgClass}${
+                            value && isColorReplanDate(row as Record<string, unknown>, date.key)
+                              ? " shadow-[inset_0_3px_0_0_#2dd4bf]"
+                              : ""
+                          }`}
                           title={
                             replanAnchorRowId === row.id
-                              ? `Click to set ${date.label} as the new plan start date`
+                              ? replanColorApproval
+                                ? `Click to start the colour approval plan on ${date.label}`
+                                : `Click to set ${date.label} as the new plan start date`
+                              : value && isColorReplanDate(row as Record<string, unknown>, date.key)
+                              ? `${eventStyle?.tooltip || ""} · Colour approval replan — not counted in Plant Performance`.replace(/^ · /, "")
                               : eventStyle?.tooltip || (isEditable ? "Click to set event status" : "Read-only")
                           }
                         >

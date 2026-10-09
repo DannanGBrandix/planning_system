@@ -392,6 +392,14 @@ function splitLegPlants_(legName) {
   return out.length ? out : [legTabName_(legName)];
 }
 
+// Plants of a "+" leg that own `code`: PPS onward goes to the SECOND plant only (same rule
+// as a bare "+" location), earlier steps stay on every plant. Mirror of legPlantsForCode in
+// app/lib/plantUtils.ts.
+function legPlantsForCode_(legName, code) {
+  var plants = splitLegPlants_(legName);
+  return (POST_PPS_EVENT_CODES[code] && plants.length >= 2) ? [plants[1]] : plants;
+}
+
 function isoDate_(d) {
   return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
@@ -476,7 +484,7 @@ function rebuildSheets() {
       //  - bare key on any other row -> first plant only (unchanged).
       var targets = [];   // { tab, fieldKey, old, legLabel }
       if (suffix) {
-        splitLegPlants_(suffix).forEach(function (p) {
+        legPlantsForCode_(suffix, code).forEach(function (p) {
           targets.push({ tab: p, fieldKey: key, old: String(raw), legLabel: p });
         });
       } else if (legs.length) {
@@ -488,7 +496,7 @@ function rebuildSheets() {
           var own = sched[dateStr + '_' + leg];
           if (own != null && String(own).trim()) return;   // that leg has its own value for this date
           var fieldKey = dateStr + '_' + leg;
-          splitLegPlants_(leg).forEach(function (p) {
+          legPlantsForCode_(leg, code).forEach(function (p) {
             targets.push({ tab: p, fieldKey: fieldKey, old: '', legLabel: p });
           });
         });

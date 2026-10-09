@@ -78,6 +78,7 @@ import SlaWatchlistBar from "./components/SlaWatchlistBar";
 import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
 import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
+import { COLOR_REPLAN_PREFIX, colorReplanKeptKeys, getColorReplanStarts, orphanedColorReplanMarkers } from "./lib/colorApprovalReplan";
 import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants } from "./lib/plantUtils";
 import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
 import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
@@ -1542,6 +1543,11 @@ export default function Home() {
         });
       }
 
+      // A colour-approval run that no longer has any events left loses its "cpr:" marker.
+      orphanedColorReplanMarkers(clearedRow as Record<string, unknown>).forEach((k) => {
+        (clearedRow as Record<string, unknown>)[k] = "";
+      });
+
       await saveRow(withEventClears(clearedRow, originalRow));
       setRows((prev) => prev.map((r) => (r.id === rowId ? clearedRow : r)));
 
@@ -1579,6 +1585,7 @@ export default function Home() {
     startDateKey: string,
     legPlant?: string,
     flowId?: number,
+    options?: { colorApproval?: boolean },
   ) => {
     try {
       const originalRow = rows.find((r) => r.id === rowId);
@@ -1586,7 +1593,62 @@ export default function Home() {
 
       let outRow: EmbellishmentRow;
 
-      if (legPlant) {
+      if (options?.colorApproval && !legPlant) {
+        // Colour-approval ("final chop") replan — see lib/colorApprovalReplan.ts. The existing plan
+        // is KEPT exactly as it is (planned pills and verdicts alike) for every day before the
+        // picked start; a fresh full plan is built from that day onward and tagged with a
+        // "cpr:<start>" marker so Plant Performance leaves it out. Built off a copy with every
+        // dated key stripped (like the per-leg branch) so the old run's FR/PPS verdicts can't make
+        // the scheduler think the new run's steps are already done.
+        const bareInput: Record<string, unknown> = { ...originalRow };
+        Object.keys(bareInput).forEach((k) => {
+          if (/^\d{4}-\d{2}-\d{2}(_.*)?$/.test(k)) delete bareInput[k];
+        });
+        const scheduled = autoScheduleEmbellishmentRow(bareInput, flowId, startDateKey) as Record<string, unknown>;
+        // The colour-approval run stops at PPS — no NY or anything after it.
+        const newKeys = colorReplanKeptKeys(scheduled);
+        if (newKeys.length === 0) {
+          alert(
+            "Can't build a plan for this row yet — it needs both a Plant and an S-Off Requirement " +
+            "filled in. Open the row's details, complete those fields, then replan.",
+          );
+          return;
+        }
+        const clashes = Object.keys(originalRow).filter((k) => {
+          const m = k.match(/^(\d{4}-\d{2}-\d{2})(?:_.+)?$/);
+          return m && m[1] >= startDateKey && String(originalRow[k] ?? "").trim();
+        });
+        if (
+          clashes.length > 0 &&
+          !window.confirm(
+            `${clashes.length} existing event(s) sit on or after ${startDateKey} and will be replaced by the ` +
+            "colour approval plan. Everything before that day is kept. Continue?",
+          )
+        ) {
+          return;
+        }
+
+        outRow = { ...originalRow, [`${COLOR_REPLAN_PREFIX}${startDateKey}`]: "1" } as EmbellishmentRow;
+        const out = outRow as Record<string, unknown>;
+        // Free the picked day onward (bare + per-leg keys) for the new run.
+        clashes.forEach((k) => { out[k] = ""; });
+        // Legs that diverged from the shared plan ("_leg_<plant>") no longer mirror bare keys, so
+        // give them their own copy of the new run — the same plan they'd show if they mirrored.
+        const divergedLegs = Object.keys(originalRow)
+          .filter((k) => k.startsWith("_leg_") && String(originalRow[k] ?? "").trim())
+          .map((k) => k.slice("_leg_".length));
+        newKeys.forEach((k) => {
+          out[k] = scheduled[k];
+          divergedLegs.forEach((leg) => { out[`${k}_${leg}`] = scheduled[k]; });
+        });
+        // Lock the opener to the picked day so nothing re-times the new run.
+        const opener = parseEventValue(String(scheduled[startDateKey] ?? ""));
+        if (opener && opener.status === "planned" && !opener.isPinned) {
+          const pinned = encodeEventValue(opener.code, "planned", undefined, true);
+          out[startDateKey] = pinned;
+          divergedLegs.forEach((leg) => { out[`${startDateKey}_${leg}`] = pinned; });
+        }
+      } else if (legPlant) {
         // Per-plant-leg replan: schedule THIS leg as a single plant doing the full embellishment
         // (not a stage of the combined chain), off a copy with every dated key stripped so it's a
         // fresh plan from the picked date. Then write it onto the leg's own suffixed keys only and
@@ -1714,6 +1776,14 @@ export default function Home() {
         outRow = scheduledRow;
       }
 
+      // A normal (non colour-approval) whole-row replan starting on/before a colour-approval run
+      // replaces that run, so its marker goes too.
+      if (!options?.colorApproval && !legPlant) {
+        getColorReplanStarts(originalRow as Record<string, unknown>).forEach((d) => {
+          if (d >= startDateKey) (outRow as Record<string, unknown>)[`${COLOR_REPLAN_PREFIX}${d}`] = "";
+        });
+      }
+
       await saveRow(withEventClears(outRow, originalRow));
       setRows((prev) => prev.map((r) => (r.id === rowId ? outRow : r)));
 
@@ -1723,7 +1793,9 @@ export default function Home() {
         styleCode: String(originalRow.col5 || "N/A"),
         field: "System Row Operations",
         oldValue: "",
-        newValue: legPlant
+        newValue: options?.colorApproval
+          ? `Colour approval replan starting ${startDateKey} (earlier plan kept; excluded from Plant Performance)`
+          : legPlant
           ? `Replanned ${legPlant} starting ${startDateKey}`
           : `Replanned starting ${startDateKey}`,
         userRole: currentRole,

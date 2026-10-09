@@ -5,6 +5,7 @@ import { parseEventValue, getReasonByCode } from "../lib/eventCodes";
 import { applyPlantAliasConfig, getPlantAliasRuntimeConfig, resolvePlantDateTargets, extractPlants, splitLegPlants } from "../lib/plantUtils";
 import { seasonBase } from "../lib/triggerUtils";
 import { resolveGraphicAoqVerdict, AoqVerdict } from "../lib/nycVerdict";
+import { withoutColorReplanEvents } from "../lib/colorApprovalReplan";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import PlantPlanRangeExport from "./PlantPlanRangeExport";
@@ -166,7 +167,9 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
       if (!graphic) return;
       const gKey = `${seasonBase(r.col4)}|${graphic}`;
       const list = byGraphic.get(gKey) ?? [];
-      list.push({ row: r as unknown as Record<string, unknown>, status });
+      // A colour-approval ("final chop") replan is not development work — its NY verdicts don't
+      // count toward the graphic's approved-before-AOQ result here.
+      list.push({ row: withoutColorReplanEvents(r as unknown as Record<string, unknown>), status });
       byGraphic.set(gKey, list);
     });
     const out = new Map<string, AoqVerdict>();
@@ -193,7 +196,9 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
       if (!graphic) return;
       const inactive = (() => { const st = getRowStatus(r); return st === "dropped" || st === "hold"; })();
 
-      const rec = r as unknown as Record<string, unknown>;
+      // Events from a colour-approval ("final chop") replan run are left out entirely — that run
+      // is planned on the same row but must not move the plant's score (lib/colorApprovalReplan.ts).
+      const rec = withoutColorReplanEvents(r as unknown as Record<string, unknown>);
       // Plants still named in PLANT (col11). A "<date>_<leg>" key whose leg was dropped from
       // col11 (e.g. "ANTELR/REGAL/EXPO" later changed to "EXPO") is left-over data the planner
       // no longer shows — its never-updated planned PPS must not count as the plant's overdue.

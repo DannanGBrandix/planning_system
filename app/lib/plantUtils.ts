@@ -467,6 +467,15 @@ export function crossDevLegNames(row: Record<string, unknown>): string[] {
 // mirror of the POST_PPS_EVENT_CODES set in integrations/google-sheet/Code.gs.
 const POST_PPS_EVENT_CODES = new Set(["PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"]);
 
+// Plants of a cross-dev leg that own `code`. A "+" leg ("Antler+Leema" in
+// "REGALIMAGE/ANTLER+LEEMA") follows the same rule as a bare "+" location: PPS onward belongs
+// to the SECOND plant only, earlier steps stay shared by every plant of the leg.
+// Mirror of legPlantsForCode_ in integrations/google-sheet/Code.gs.
+function legPlantsForCode(leg: string, code: string): string[] {
+  const plants = splitLegPlants(leg);
+  return POST_PPS_EVENT_CODES.has(code) && plants.length >= 2 ? [plants[1]] : plants;
+}
+
 export interface PlantDateTarget {
   plant: string; // canonical individual plant -> the PLANT column + its own grid row
   fieldKey: string; // schedule key this cell confirms ("2026-09-02" or "2026-09-02_MRC")
@@ -510,7 +519,7 @@ export function resolvePlantDateTargets(
     if (!parsed || (parsed.status !== "planned" && !opts?.includeVerdicts)) return;
 
     if (suffix) {
-      splitLegPlants(suffix).forEach((p) =>
+      legPlantsForCode(suffix, parsed.code).forEach((p) =>
         push({ plant: p, fieldKey: key, legLabel: suffix, code: parsed.code, rawValue }),
       );
     } else if (legs.length) {
@@ -525,7 +534,7 @@ export function resolvePlantDateTargets(
           (row as Record<string, unknown>)[`${isoDate}_${leg}`] || "",
         ).trim();
         if (own) return; // that leg has its own value for this date — handled by the suffix branch
-        splitLegPlants(leg).forEach((p) =>
+        legPlantsForCode(leg, parsed.code).forEach((p) =>
           push({
             plant: p,
             fieldKey: `${isoDate}_${leg}`,
