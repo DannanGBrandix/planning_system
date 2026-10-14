@@ -131,6 +131,20 @@ const DEFAULT_COLUMNS = {
   col49: "2nd Submission Fabric",
   // Free-text note shown on the Fabric Dispatch page + export (what fabric is going this time).
   col50: "Fabric Dispatch Comment",
+  // HO27 Dev Pack Tracker import (lib/devPackImport.ts, 2026-10-14). Kept out of col22/col34
+  // so plant feasibility notes ("drop", "approval"...) can't flip getRowStatus. JSONB like col34+.
+  col52: "Dev Pack Concerns / Limitation",
+  col53: "Dev Pack Remark",
+  col54: "Dev Pack Cost",
+  col55: "Dev Pack Ready Date",
+  col56: "Dev Pack Pass Off Date",
+  col57: "Dev Pack Reviewed w/ Graphics Team",
+  col58: "Dev Pack Size",
+  col59: "Dev Pack Per Day Output",
+  col60: "Dev Pack RM Lead Time",
+  col61: "Dev Pack Wash Recommendation",
+  col62: "Dev Pack Vendor & Supplier",
+  col63: "Dev Pack Synced",
 };
 
 // Initial Seed Data for fallback

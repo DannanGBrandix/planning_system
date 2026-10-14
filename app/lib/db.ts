@@ -719,6 +719,20 @@ export const DEFAULT_COLUMNS: ColumnMapping = {
   // (e.g. body fabric already went, now sending the applique fabric). Shown on the Fabric
   // Dispatch page and in its Excel export. Routes through `schedule` JSONB like col34+.
   col50: "Fabric Dispatch Comment",
+  // HO27 Dev Pack Tracker import (lib/devPackImport.ts, 2026-10-14). Kept out of col22/col34
+  // so plant feasibility notes ("drop", "approval"...) can't flip getRowStatus. JSONB like col34+.
+  col52: "Dev Pack Concerns / Limitation",
+  col53: "Dev Pack Remark",
+  col54: "Dev Pack Cost",
+  col55: "Dev Pack Ready Date",
+  col56: "Dev Pack Pass Off Date",
+  col57: "Dev Pack Reviewed w/ Graphics Team",
+  col58: "Dev Pack Size",
+  col59: "Dev Pack Per Day Output",
+  col60: "Dev Pack RM Lead Time",
+  col61: "Dev Pack Wash Recommendation",
+  col62: "Dev Pack Vendor & Supplier",
+  col63: "Dev Pack Synced",
 };
 
 // Seed Mock Data in server
@@ -1462,6 +1476,30 @@ export function isExcludedFromAdvancedAnalytics(r: EmbellishmentRow): boolean {
     ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES.some((t) => graphicType.includes(t)) ||
     isDevGraphic(r.col7)
   );
+}
+
+// A DEV development graphic — by graphic number ("H27_DEV_011") or Graphic Type "DEV".
+export function isDevRow(r: EmbellishmentRow): boolean {
+  return isDevGraphic(r.col7) || String(r.col19 || "").toLowerCase().includes("dev");
+}
+
+// Advanced Analytics' "Dev graphics" toggle (2026-10-14): off = the normal view (DEV rows left out,
+// see above); on = ONLY the DEV rows, through the same cards and charts. Branding/Trial stay out
+// of both.
+export function isInAdvancedAnalytics(r: EmbellishmentRow, devMode: boolean): boolean {
+  if (!devMode) return !isExcludedFromAdvancedAnalytics(r);
+  const graphicType = String(r.col19 || "").toLowerCase();
+  return isDevRow(r) && !["branding", "trial"].some((t) => graphicType.includes(t));
+}
+
+// Standard Dashboard (Submission Pending card + Status "Submission Pending" filter): when the
+// current Category/Season selection holds ONLY DEV graphics (e.g. VS AE + HO27 — every HO27 row
+// is a dev pack), count them instead of excluding everything to 0. A mixed selection keeps the
+// normal rule, so the VS/PINK numbers still mirror Advanced Analytics.
+export function analyticsScopedRows<T extends EmbellishmentRow>(rows: T[]): T[] {
+  const normal = rows.filter((r) => isInAdvancedAnalytics(r, false));
+  if (normal.length > 0) return normal;
+  return rows.filter((r) => isInAdvancedAnalytics(r, true));
 }
 
 // col20 (Strike off Aesthetic Approval / Dropped) holds two very different kinds of content: an

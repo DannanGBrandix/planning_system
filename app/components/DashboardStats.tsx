@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { EmbellishmentRow, getRowStatus, isRowSent, groupRowsByCombo, getGroupStatus, isExcludedFromAdvancedAnalytics } from "../lib/db";
+import { EmbellishmentRow, getRowStatus, isRowSent, groupRowsByCombo, getGroupStatus, analyticsScopedRows } from "../lib/db";
 import ComboListModal from "./ComboListModal";
 
 interface DashboardStatsProps {
@@ -41,9 +41,8 @@ export default function DashboardStats({ rows }: DashboardStatsProps) {
   //    signed off) it moves to Comments Pending. CK: straight from its SP code.
   const submissionPendingCombos = useMemo(
     () =>
-      groupRowsByCombo(
-        rows.filter((r) => !isExcludedFromAdvancedAnalytics(r)),
-      ).filter((g) => getGroupStatus(g) === "pending"),
+      // DEV-only selection (VS AE + HO27 dev packs) counts its DEV rows — see analyticsScopedRows.
+      groupRowsByCombo(analyticsScopedRows(rows)).filter((g) => getGroupStatus(g) === "pending"),
     [rows],
   );
   const submissionPending = submissionPendingCombos.length;

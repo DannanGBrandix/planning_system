@@ -689,6 +689,7 @@ export default function AdvancedDashboard({
     >();
 
     rows.forEach((r) => {
+      if (getRowStatus(r) === 'dropped') return; // dropped graphics aren't run by any plant
       const tc = techniqueGroupForRow(r);
       if (!tc) return;
       const technique = tc.label;
@@ -707,8 +708,8 @@ export default function AdvancedDashboard({
       const entry = map.get(techniqueKey)!;
 
       const risk = String(r.col17 || "").trim().toUpperCase();
+      // Only HIGH and LOW are used (Medium removed 2026-10-14) — anything else counts as unrated.
       if (risk.includes("HIGH")) entry.high += 1;
-      else if (risk.includes("MED")) entry.medium += 1;
       else if (risk.includes("LOW")) entry.low += 1;
       else entry.unspecified += 1;
 
@@ -777,17 +778,16 @@ export default function AdvancedDashboard({
     >();
 
     rows.forEach((r) => {
+      if (getRowStatus(r) === 'dropped') return; // dropped graphics aren't run by any plant
       const tc = techniqueGroupForRow(r);
       if (!tc) return;
       // Risk Factor (col17) — same buckets as the chart above.
       const riskRaw = String(r.col17 || "").trim().toUpperCase();
       const risk: keyof RiskCounts = riskRaw.includes("HIGH")
         ? "high"
-        : riskRaw.includes("MED")
-          ? "medium"
-          : riskRaw.includes("LOW")
-            ? "low"
-            : "unrated";
+        : riskRaw.includes("LOW")
+          ? "low"
+          : "unrated";
       let rowPlants = extractPlants(r.col11 as string | null | undefined);
       if (rowPlants.length === 0) rowPlants = extractPlants(plantFromFlow(r.col12 as string | null | undefined));
       if (rowPlants.length === 0) rowPlants = ["Unassigned"];
@@ -1649,7 +1649,6 @@ export default function AdvancedDashboard({
           </h3>
           <div className="flex items-center gap-3">
             <LegendDot color="#ef4444" label="High Risk" />
-            <LegendDot color="#eab308" label="Medium Risk" />
             <LegendDot color="#22c55e" label="Low Risk" />
             <LegendDot color="#3f4a58" label="Unrated" />
           </div>
@@ -1687,7 +1686,6 @@ export default function AdvancedDashboard({
                   cursor={{ fill: "rgba(255,255,255,0.04)" }}
                 />
                 <Bar dataKey="high" stackId="risk" fill="#ef4444" name="High Risk" barSize={22} />
-                <Bar dataKey="medium" stackId="risk" fill="#eab308" name="Medium Risk" barSize={22} />
                 <Bar dataKey="low" stackId="risk" fill="#22c55e" name="Low Risk" barSize={22} />
                 <Bar
                   dataKey="unspecified"
@@ -1727,7 +1725,7 @@ export default function AdvancedDashboard({
                     title={`See all techniques at ${plant}`}
                   >
                     <span>{plant}</span>
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] tabular-nums">
+                    <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-sm tabular-nums">
                       {info.total}
                     </span>
                     <span className="text-[10px] font-semibold text-zinc-500">
@@ -1746,7 +1744,7 @@ export default function AdvancedDashboard({
                         {t.label}
                       </span>
                       <span className="text-[11px] text-zinc-400 whitespace-nowrap">
-                        <span className="text-white font-bold">{t.total}</span> items ·{" "}
+                        <span className="text-white font-bold text-base tabular-nums">{t.total}</span> items ·{" "}
                         {t.plantList.length} plant{t.plantList.length === 1 ? "" : "s"}
                       </span>
                     </div>
@@ -1755,7 +1753,7 @@ export default function AdvancedDashboard({
                       {t.details.map((d, i) => (
                         <span key={d.label}>
                           {i > 0 && ", "}
-                          {d.label} <span className="text-zinc-500 tabular-nums">({d.count})</span>
+                          {d.label} <span className="text-zinc-300 font-semibold text-[11px] tabular-nums">({d.count})</span>
                         </span>
                       ))}
                     </div>
@@ -1776,7 +1774,7 @@ export default function AdvancedDashboard({
                               style={{ width: `${Math.max(4, (p.count / top) * 100)}%` }}
                             />
                           </span>
-                          <span className="w-8 text-right font-bold text-white tabular-nums">{p.count}</span>
+                          <span className="w-10 text-right text-sm font-bold text-white tabular-nums">{p.count}</span>
                         </li>
                       ))}
                     </ul>
@@ -1797,7 +1795,6 @@ export default function AdvancedDashboard({
         // Same risk colours as the chart's legend.
         const RISK_SEGMENTS = [
           { key: "high", label: "High", color: "#ef4444" },
-          { key: "medium", label: "Medium", color: "#eab308" },
           { key: "low", label: "Low", color: "#22c55e" },
           { key: "unrated", label: "Unrated", color: "#3f4a58" },
         ] as const;
@@ -2140,7 +2137,6 @@ function TechniqueTooltip({
       <div className="text-[10px] text-zinc-300 mb-2">
         Total: <span className="font-bold text-white">{d.total}</span>
         {d.high > 0 && <span className="text-red-400 ml-2">High {d.high}</span>}
-        {d.medium > 0 && <span className="text-yellow-400 ml-2">Med {d.medium}</span>}
         {d.low > 0 && <span className="text-green-400 ml-2">Low {d.low}</span>}
         {d.unspecified > 0 && (
           <span className="text-zinc-500 ml-2">Unrated {d.unspecified}</span>

@@ -41,7 +41,8 @@ import {
   markCkChartsSynced,
   CkChartStatus,
   derivePlanStatus,
-  isExcludedFromAdvancedAnalytics,
+  isInAdvancedAnalytics,
+  analyticsScopedRows,
   groupRowsByCombo,
   getGroupStatus,
   getLastRowsSync,
@@ -62,6 +63,8 @@ import ImportPreviewModal, {
   ParsedImportItem,
 } from "./components/ImportPreviewModal";
 import ImportConfigModal from "./components/ImportConfigModal";
+import DevPackImportModal, { DevPackPreviewEntry } from "./components/DevPackImportModal";
+import { parseDevPackWorkbook, matchDevPackRow, applyDevPackItem } from "./lib/devPackImport";
 import CkSyncButton from "./components/CkSyncButton";
 import ActionCenterView from "./components/ActionCenterView";
 import GlobalSidebar from "./components/GlobalSidebar";
@@ -216,6 +219,16 @@ export default function Home() {
     ckCategory?: string;
   } | null>(null);
   const [importFileName, setImportFileName] = useState<string>("");
+  // Advanced Analytics "Dev graphics" toggle (under the Season filter): on = show ONLY the DEV
+  // graphics (H27_DEV_…), which the normal view leaves out — see isInAdvancedAnalytics.
+  const [advancedDevMode, setAdvancedDevMode] = useState<boolean>(false);
+  // HO27 Dev Pack Tracker import (own parser/preview — see lib/devPackImport.ts).
+  const [devPackImport, setDevPackImport] = useState<{
+    fileName: string;
+    sheetsRead: string[];
+    sheetsSkipped: string[];
+    entries: DevPackPreviewEntry[];
+  } | null>(null);
   const [parsedImportItems, setParsedImportItems] = useState<
     ParsedImportItem[]
   >([]);
@@ -2198,6 +2211,81 @@ export default function Home() {
   // on the user picking "CK" in the import dialog by hand.
   const handleImportCkTrackingChart = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleImportExcel(e, false, true);
+  };
+
+  // "Dev Pack Tracker" entry point (HO27 Dev PACK TRACKER.xlsx). Different layout from the graphic
+  // charts, so it has its own parser (lib/devPackImport.ts) and preview instead of the generic
+  // pipeline: it only attaches DHL / concerns / cost… to DEV rows already in the plan.
+  const handleImportDevPack = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (isImportSyncingRef.current) {
+      window.alert("An import is still being saved to the database. Please wait for it to finish before starting another import.");
+      return;
+    }
+    setIsLoading(true);
+    file
+      .arrayBuffer()
+      .then((buffer) => {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const wb = XLSX.read(buffer, { type: "array", codepage: 65001 });
+        const { items, sheetsRead, sheetsSkipped } = parseDevPackWorkbook(wb, todayIso);
+        if (sheetsRead.length === 0) {
+          window.alert(`No "SL Dev pack" sheet found in ${file.name}. Sheets: ${wb.SheetNames.join(", ")}`);
+          return;
+        }
+        const entries: DevPackPreviewEntry[] = items.map((item) => {
+          const row = matchDevPackRow(item, rows);
+          if (!row) return { item, row: null, updated: null, changes: [] };
+          const { row: updated, changes } = applyDevPackItem(row, item, todayIso);
+          return { item, row, updated, changes };
+        });
+        setDevPackImport({ fileName: file.name, sheetsRead, sheetsSkipped, entries });
+      })
+      .catch((err) => {
+        console.error("Dev Pack import failed to read file:", err);
+        window.alert("Failed to read the Dev Pack tracker file.");
+      })
+      .finally(() => setIsLoading(false));
+  };
+
+  const handleConfirmDevPackImport = async () => {
+    if (!devPackImport) return;
+    // Two tracker rows can resolve to the same plan row — later one applies on top.
+    const merged = new Map<string, EmbellishmentRow>();
+    const logs: AuditLog[] = [];
+    devPackImport.entries.forEach((e) => {
+      if (!e.row || !e.updated || !e.changes.length) return;
+      const prev = merged.get(e.row.id);
+      merged.set(e.row.id, prev ? { ...prev, ...Object.fromEntries(e.changes.map((c) => [c.field, c.newValue])), col63: e.updated.col63 } : e.updated);
+      e.changes.forEach((c) =>
+        logs.push({
+          id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          styleCode: `${String(e.row!.col7 || "")} ${String(e.row!.col6 || "")}`.trim(),
+          field: `Dev Pack: ${c.label}`,
+          oldValue: c.oldValue,
+          newValue: c.newValue,
+          userRole: currentRole,
+        }),
+      );
+    });
+    if (merged.size === 0) return;
+    setIsImportSyncing(true);
+    try {
+      await createBackup(`Before importing ${devPackImport.fileName}`, rows, "import");
+      await saveMultipleRows([...merged.values()]);
+      if (logs.length) await saveMultipleAuditLogs(logs);
+      setAuditLogs((prev) => [...logs, ...prev]);
+      setRows(await getAllRows(currentRole));
+      setDevPackImport(null);
+    } catch (err) {
+      console.error("Dev Pack import save failed:", err);
+      window.alert("Failed to save the Dev Pack tracker data.");
+    } finally {
+      setIsImportSyncing(false);
+    }
   };
 
   // ── CK Charts sync state machine ────────────────────────────────────────
@@ -5497,7 +5585,7 @@ export default function Home() {
         // (Style|Graphic|Combo|Ground) whose strike-off hasn't gone to NY yet (no DHL / strike-off
         // comment on any live row; CK on its SP code), Branding/Trial left out. One row per combo
         // so the table count equals the card, not one line per trigger (KNIT + LOUNGE twins).
-        result = groupRowsByCombo(result.filter((r) => !isExcludedFromAdvancedAnalytics(r)))
+        result = groupRowsByCombo(analyticsScopedRows(result))
           .filter((g) => getGroupStatus(g) === "pending")
           .map((g) => g.find((r) => getRowStatus(r) === "pending") ?? g[0]);
       } else if (selectedStatusFilter === "Resubmit") {
@@ -5748,8 +5836,8 @@ export default function Home() {
   // Advanced Analytics counts, charts, or tables. Every other view keeps them.
   const advancedAnalyticsRows = useMemo(
     () =>
-      currentVersionRows.filter((r) => !isExcludedFromAdvancedAnalytics(r)),
-    [currentVersionRows],
+      currentVersionRows.filter((r) => isInAdvancedAnalytics(r, advancedDevMode)),
+    [currentVersionRows, advancedDevMode],
   );
 
   // The universe of options for the Advanced Analytics sidebar dropdowns — every
@@ -5761,9 +5849,9 @@ export default function Home() {
   const advancedFilterOptionRows = useMemo(
     () =>
       rows.filter(
-        (r) => r.is_current !== false && !isExcludedFromAdvancedAnalytics(r),
+        (r) => r.is_current !== false && isInAdvancedAnalytics(r, advancedDevMode),
       ),
-    [rows],
+    [rows, advancedDevMode],
   );
 
   // Trigger Manager deliberately does NOT use currentVersionRows/displayedRows above — those are
@@ -5835,6 +5923,7 @@ export default function Home() {
         onImportExcel={handleImportExcel}
         onImportPlanningSheet={handleImportPlanningSheet}
         onImportCkTrackingChart={handleImportCkTrackingChart}
+        onImportDevPack={handleImportDevPack}
         onOpenAuditLogs={() => setIsAuditDrawerOpen(true)}
         auditLogsCount={auditLogs.length}
         currentRole={currentRole}
@@ -5937,6 +6026,8 @@ export default function Home() {
                 rows={advancedFilterOptionRows}
                 selections={advancedSelections}
                 setSelections={setAdvancedSelections}
+                devMode={advancedDevMode}
+                setDevMode={setAdvancedDevMode}
               />
               <AdvancedDashboard rows={advancedAnalyticsRows} onAutoApprove={handleAutoApproveCpSp} selections={advancedSelections} onUpdateRow={handleUpdateRow} />
             </div>
@@ -6263,6 +6354,18 @@ export default function Home() {
         logs={auditLogs}
         onClearLogs={handleClearAuditLogs}
       />
+
+      {devPackImport && (
+        <DevPackImportModal
+          fileName={devPackImport.fileName}
+          sheetsRead={devPackImport.sheetsRead}
+          sheetsSkipped={devPackImport.sheetsSkipped}
+          entries={devPackImport.entries}
+          isImporting={isImportSyncing}
+          onClose={() => setDevPackImport(null)}
+          onConfirm={handleConfirmDevPackImport}
+        />
+      )}
 
       {/* Render Import Analysis Preview Modal */}
       <ImportPreviewModal
