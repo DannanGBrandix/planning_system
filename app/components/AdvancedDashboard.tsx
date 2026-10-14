@@ -1600,7 +1600,7 @@ export default function AdvancedDashboard({
             />
             <ApprovalSplitCard
               title="Color Approval"
-              hint="from Strike-Off Comments · “APPROVED FOR COLOR”"
+              hint="from Strike-Off Comments · “APPROVED FOR COLOR” · or ticked ✓ in Color Approval"
               value={stats.combo.colorApproved}
               total={stats.combo.approved}
               totalLabel="approved"

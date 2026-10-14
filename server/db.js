@@ -14,6 +14,7 @@ const isSupabaseConfigured =
   supabaseKey !== "" &&
   !supabaseKey.includes("your-supabase-service-role");
 
+const zlib = require("zlib");
 const rowColumns = require("./rowColumns");
 const planningEvents = require("./planningEvents");
 
@@ -1094,7 +1095,10 @@ module.exports = {
     };
 
     if (useSupabase && supabase) {
-      const { error } = await supabase.from("backups").insert(backup);
+      // A full uncompressed snapshot is a multi-MB JSONB insert that blows Supabase's statement
+      // timeout, so store it gzipped as { gz: "<base64>" } (~10x smaller). getBackup inflates it.
+      const gz = zlib.gzipSync(Buffer.from(JSON.stringify(backup.data))).toString("base64");
+      const { error } = await supabase.from("backups").insert({ ...backup, data: { gz } });
       if (error) throw error;
 
       // Prune old backups beyond MAX_BACKUPS, oldest first
@@ -1141,6 +1145,10 @@ module.exports = {
     if (useSupabase && supabase) {
       const { data, error } = await supabase.from("backups").select("*").eq("id", id).single();
       if (error) throw error;
+      // New backups are gzipped (see createBackup); older ones are a plain row array.
+      if (data && data.data && typeof data.data.gz === "string") {
+        data.data = JSON.parse(zlib.gunzipSync(Buffer.from(data.data.gz, "base64")).toString("utf8"));
+      }
       return data;
     } else {
       return inMemoryBackups.find((b) => b.id === id) || null;

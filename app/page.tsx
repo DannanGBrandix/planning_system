@@ -5465,10 +5465,13 @@ export default function Home() {
       result = result.filter((row) => !isRowSent(row));
     }
 
-    // Apply Color Approval Filter — state is computed over ALL rows so a combo's colour sign-off
-    // on a row hidden by other filters still counts.
+    // Apply Color Approval Filter — state is computed over the rows the other filters left (same
+    // scope Advanced Analytics' Color Approval card counts over). Computing it over ALL rows let a
+    // twin row in another Category with the same Style|Graphic|Combo|Ground (e.g. a PINK SP27 row
+    // ticked ✓ Color Approval) mark the VS-SLEEP combo colour-approved, so "Missing Color" showed
+    // 11 while the card said 14 missing.
     if (colorFilter !== "all") {
-      const byCombo = colorApprovalByCombo(rows);
+      const byCombo = colorApprovalByCombo(result);
       result = result.filter((row) => byCombo.get(comboKeyOf(row)) === colorFilter);
     }
 

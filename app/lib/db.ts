@@ -1408,6 +1408,10 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
 //      APPROVED must sit immediately after COLOR(S) so "COLOR NOT APPROVED" can't match.
 const COLOR_APPROVED_RE = /(?:APPROVED|APP)\s+(?:FOR\s+)?[A-Z0-9\/,&\s]*\bCOLOU?RS?\b|\bCOLOU?RS?\s+APPROVED\b/;
 export function hasColorApproval(r: EmbellishmentRow): boolean {
+  // A Color Approval (col41) the planner ticked "✓ Approved" by hand counts even when no
+  // strike-off comment says so. Only "Y" is honoured — "N" is what "Sync Approval Cols" writes
+  // for rows still waiting, so treating it as a veto would hide a later comment sign-off.
+  if (String(r.col41 || '').trim().toUpperCase() === 'Y') return true;
   const c22 = String(r.col22 || '').toUpperCase();
   const c34 = String(r.col34 || '').toUpperCase();
   return COLOR_APPROVED_RE.test(c22) || COLOR_APPROVED_RE.test(c34);
