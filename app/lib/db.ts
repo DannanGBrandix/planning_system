@@ -1258,7 +1258,9 @@ export async function applyCkDedupe(): Promise<{ deleted: number; updated: numbe
 // re-sync hasn't corrected col1 yet", so it maps to dropped, not pending.
 const getCkRowStatus = (c1: string): 'approved' | 'dropped' | 'hold' | 'pending' | 'c+p' => {
   if (c1 === 'A' || c1 === 'APPROVED') return 'approved';
-  if (c1 === 'CP' || c1 === 'C+P') return 'c+p';
+  // "Comments Pending" spelled out (set by hand / Event Status Panel) means the same as "CP" —
+  // without this it fell through to 'pending' and counted as Submission Pending.
+  if (c1 === 'CP' || c1 === 'C+P' || c1 === 'C + P' || /^COMMENTS?\s*PENDING$/.test(c1)) return 'c+p';
   if (c1 === 'H' || c1 === 'HOLD') return 'hold';
   if (c1 === 'D' || c1 === 'DROPPED' || c1 === 'REACTIVATED') return 'dropped';
   // SP ("Pending") and anything unrecognized/blank both fall here — CK's S/off Status only ever
