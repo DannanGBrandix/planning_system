@@ -92,6 +92,8 @@ import {
   ckCategoryCanonical,
   isCkFamilyCategory,
   ckCategoriesCompatible,
+  ckCanonicalCategoryLabel,
+  LEGACY_CK,
 } from "./lib/ckCategories";
 
 // Classify an Excel cell fill color by luminance/hue instead of matching an exact hex
@@ -157,6 +159,8 @@ export default function Home() {
   const [selectedSeasonFilter, setSelectedSeasonFilter] = useState<string>("");
   const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string>("");
   const [selectedPlantFilter, setSelectedPlantFilter] = useState<string>("");
+  // Ground colour (col8) filter — stored upper-cased so "Dress Blues" / "DRESS BLUES" match alike.
+  const [selectedGroundFilter, setSelectedGroundFilter] = useState<string>("");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<"All" | "Active" | "Dropped" | "Hold" | "Approved" | "C+P" | "Pending" | "Resubmit">("Active");
   // Plan Status (col47) filter — the planning-lifecycle flag, independent of the S/off Status
   // filter above and of anything Advanced Analytics reads.
@@ -1034,10 +1038,15 @@ export default function Home() {
             // must include Category + Season, not just the Trigger text. Without this, editing
             // AOQ on one season's "KNIT" row silently overwrote every other season's "KNIT" rows
             // too (confirmed: a SU27 row was showing SP27's AOQ date because of exactly this).
+            // CK-family rows have no real Trigger (col2 is just the season), so keying on it fanned
+            // one CK row's AOQ out to the whole Category+Season. CK AOQ is per row: an edit changes
+            // only the row being edited (planner, 2026-10-15 — not even same-graphic siblings).
             const getDropKey = (r: EmbellishmentRow): string => {
               const col2Val = String(r.col2 || "").trim();
               let triggerPart: string;
-              if (col2Val && col2Val.toUpperCase() !== "N/A") {
+              if (isCkFamilyCategory(String(r.col3 || ""))) {
+                triggerPart = `ROW:${r.id}`;
+              } else if (col2Val && col2Val.toUpperCase() !== "N/A") {
                 triggerPart = col2Val.toUpperCase();
               } else {
                 const col4Val = String(r.col4 || "").trim();
@@ -3905,6 +3914,16 @@ export default function Home() {
             // never reaches the merge. col5 is deliberately left as-is: keeping its (equally
             // bogus) value non-blank is what makes Strategy 1 correctly fail for CK instead of
             // over-matching all of a graphic's colorways — see Strategy CK below.
+            // The CK category this row is stamped with. A file-name-derived specific category
+            // ("CKNA Men's" / "CKP" / ...) wins. But when the file name only resolved to the bare
+            // "CK" fallback (e.g. "CKNA SP28 sample plan - 10.14.xlsx" — no Men/Women in the name),
+            // the sheet's own Category column ("CKNA WOMEN'S") is the real answer — use it instead
+            // of flattening every row to legacy "CK".
+            let rowCkCategory = data.ckCategory;
+            if (rowCkCategory === LEGACY_CK) {
+              const ownLabel = ckCanonicalCategoryLabel(String(formattedRow["col3"] || ""));
+              if (ownLabel && ownLabel !== LEGACY_CK) rowCkCategory = ownLabel;
+            }
             {
               const ckCat = normalize(formattedRow["col3"] || "").replace(/[^a-z0-9]/g, "");
               const isCkCat = Boolean(data.ckCategory) || ckCat === "ck" || ckCat.startsWith("ckna");
@@ -3940,8 +3959,8 @@ export default function Home() {
             // IS folded into the match identity here. This is what stops a CKNA Men's row from
             // blank-tolerantly matching a PINK / VS row that happens to share Graphic+Ground, and
             // what lets it match (and re-label) a legacy bare-"CK" row.
-            const incomingCategory = data.ckCategory
-              ? normalize(data.ckCategory)
+            const incomingCategory = rowCkCategory
+              ? normalize(rowCkCategory)
               : normalize(formattedRow["col3"] || "");
             const incomingSeason = normalize(formattedRow["col4"] || "");
 
@@ -4703,8 +4722,8 @@ export default function Home() {
             // back to "CK" when the file name isn't recognisable. Category being CK-family is what
             // getRowStatus (lib/db.ts) and the Advanced Analytics pending calc key off to route a
             // row onto the S/off Status letter-code path instead of the VS/PINK comment cascade.
-            if (data.ckCategory) {
-              mergedRow.col3 = data.ckCategory;
+            if (rowCkCategory) {
+              mergedRow.col3 = rowCkCategory;
             } else if (data.isCkImport) {
               mergedRow.col3 = "CK";
             }
@@ -5517,6 +5536,13 @@ export default function Home() {
       result = result.filter((row) => rowFilterPlants(row).includes(selectedPlantFilter));
     }
 
+    // Apply Ground colour Dropdown Filter (standard dashboard only) — case-insensitive on col8.
+    if (selectedGroundFilter && viewMode !== "advanced") {
+      result = result.filter(
+        (row) => String(row.col8 || "").trim().toUpperCase() === selectedGroundFilter,
+      );
+    }
+
     // Event-capsule triggers (Super Bowl, …) are hidden from EVERY default view — they're
     // planned/reported on their own, so a plain Category + Season view (standard or advanced)
     // must not fold them in on top of the regular seasonal flow. They reappear the moment their
@@ -5806,6 +5832,7 @@ export default function Home() {
     selectedPlanStatusFilter,
     selectedTriggerFilter,
     selectedPlantFilter,
+    selectedGroundFilter,
     dhlFilter,
     colorFilter,
     slaFilter,
@@ -6273,6 +6300,8 @@ export default function Home() {
                     setSelectedTriggerFilter={setSelectedTriggerFilter}
                     selectedPlantFilter={selectedPlantFilter}
                     setSelectedPlantFilter={setSelectedPlantFilter}
+                    selectedGroundFilter={selectedGroundFilter}
+                    setSelectedGroundFilter={setSelectedGroundFilter}
                     selectedStatusFilter={selectedStatusFilter}
                     setSelectedStatusFilter={setSelectedStatusFilter}
                     selectedPlanStatusFilter={selectedPlanStatusFilter}
