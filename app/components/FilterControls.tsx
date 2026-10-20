@@ -22,6 +22,8 @@ interface FilterControlsProps {
   colorFilter?: "all" | "colorApproved" | "missingColor";
   setColorFilter?: (colorFilter: "all" | "colorApproved" | "missingColor") => void;
   rows: EmbellishmentRow[];
+  // Rows left by every active filter except Ground — scopes the Ground dropdown. Falls back to rows.
+  groundRows?: EmbellishmentRow[];
   onOpenConfig: () => void;
   onResetDatabase: () => void;
   onOpenExcelImporter?: () => void;
@@ -55,6 +57,7 @@ export default function FilterControls({
   colorFilter,
   setColorFilter,
   rows,
+  groundRows,
   onOpenConfig,
   onResetDatabase,
   currentRole,
@@ -130,10 +133,11 @@ export default function FilterControls({
   }, [rows]);
 
   // Ground colours (col8) for the Ground Filter Dropdown, with row counts. Keyed upper-cased so
-  // casing variants collapse onto one entry; the label keeps the first spelling seen.
+  // casing variants collapse onto one entry; the label keeps the first spelling seen. Only the
+  // colours under the other active filters (Category, Season, Plant, Status, ...) are listed.
   const groundCounts = useMemo(() => {
     const counts = new Map<string, { label: string; count: number }>();
-    rows.forEach((r) => {
+    (groundRows ?? rows).forEach((r) => {
       const label = String(r.col8 || "").trim();
       if (!label || label === "-" || label === "N/A") return;
       const key = label.toUpperCase();
@@ -142,7 +146,7 @@ export default function FilterControls({
       else counts.set(key, { label, count: 1 });
     });
     return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [rows]);
+  }, [groundRows, rows]);
 
   const [groundOpen, setGroundOpen] = useState<boolean>(false);
   const [groundSearch, setGroundSearch] = useState<string>("");

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { encodeEventValue, parseEventValue } from "./lib/eventCodes";
 import { loadCodes } from "./lib/codesStore";
@@ -4170,7 +4170,12 @@ export default function Home() {
             // values (which used inconsistent delimiters — "+", "/", etc. — and turned out too messy
             // to compare reliably), this one is simple and consistent: always plain numbers
             // separated by whitespace, so a token-set-overlap fallback is safe here.
-            const incomingStyleTokens = new Set(incomingStyle.split(/\s+/).filter(Boolean));
+            // "/" and "," are separators too: the PINK F27 chart writes "10352041 / 10352033" and
+            // "10357145/10356871" while the DB holds "10352041/10352033" or the single styles —
+            // splitting on whitespace alone left "/" glued to a token, so 5 existing rows showed
+            // up as "New Items" on re-import.
+            const splitStyleTokens = (s: string) => s.split(/[\s\/,]+/).filter(Boolean);
+            const incomingStyleTokens = new Set(splitStyleTokens(incomingStyle));
             const styleMatches = (dbStyleRaw: unknown): boolean => {
               const dbStyle = normalize(dbStyleRaw || "");
               // Blank-tolerant, same as the Category/Season/Fabric guards above: a file that
@@ -4183,7 +4188,7 @@ export default function Home() {
               // already created by the main Tracking Chart import.
               if (!incomingStyle || !dbStyle) return true;
               if (dbStyle === incomingStyle) return true;
-              const dbStyleTokens = dbStyle.split(/\s+/).filter(Boolean);
+              const dbStyleTokens = splitStyleTokens(dbStyle);
               return dbStyleTokens.some((t) => incomingStyleTokens.has(t));
             };
 
@@ -5480,8 +5485,11 @@ export default function Home() {
     }
   };
 
-  // Filter rows based on search bar query OR active plant tab for department portal
-  const displayedRows = useMemo(() => {
+  // Filter rows based on search bar query OR active plant tab for department portal.
+  // skipGround: run every filter EXCEPT the Ground colour one — feeds the Ground dropdown, so it
+  // lists only the colours present under the other active filters (and stays listable once a
+  // ground is picked, instead of collapsing to that one entry).
+  const applyRowFilters = useCallback((skipGround: boolean) => {
     // Show ALL versions in the main views (as requested by user)
     let result = [...draftRows, ...rows];
 
@@ -5537,7 +5545,7 @@ export default function Home() {
     }
 
     // Apply Ground colour Dropdown Filter (standard dashboard only) — case-insensitive on col8.
-    if (selectedGroundFilter && viewMode !== "advanced") {
+    if (selectedGroundFilter && viewMode !== "advanced" && !skipGround) {
       result = result.filter(
         (row) => String(row.col8 || "").trim().toUpperCase() === selectedGroundFilter,
       );
@@ -5843,6 +5851,9 @@ export default function Home() {
     viewMode,
     advancedSelections,
   ]);
+
+  const displayedRows = useMemo(() => applyRowFilters(false), [applyRowFilters]);
+  const groundScopeRows = useMemo(() => applyRowFilters(true), [applyRowFilters]);
 
   // Same rows as displayedRows, but excluding archived (is_current: false) versions — for
   // rollup/summary views (Advanced Analytics, Action Center, Score Card, Fabric Dispatch,
@@ -6313,6 +6324,7 @@ export default function Home() {
                     selectedTeamFilter={selectedTeamFilter}
                     setSelectedTeamFilter={setSelectedTeamFilter}
                     rows={rows}
+                    groundRows={groundScopeRows}
                     onOpenConfig={() => setIsConfigOpen(true)}
                     onResetDatabase={handleResetDatabase}
                     currentRole={currentRole}
