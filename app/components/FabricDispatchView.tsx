@@ -5,7 +5,7 @@ import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import EventStatusPanel from "./EventStatusPanel";
 import { parseEventValue } from "../lib/eventCodes";
-import { parseCrossDevGroups, normalizeSinglePlant } from "../lib/plantUtils";
+import { parseCrossDevGroups, normalizeSinglePlant, leadingDyePlant } from "../lib/plantUtils";
 import { getPlanningCategory } from "../lib/planningFlows";
 
 interface FabricDispatchViewProps {
@@ -184,7 +184,13 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
         // ONE group, likewise "AV1" / "AV2" / "BFFAV" / "BRANDIXEMB". The per-leg schedule-key
         // lookups above stay on the raw name (they must match what's stored on the row); only
         // the grouping + the exported PLANT cell use the canonical name.
-        const canonicalName = normalizeSinglePlant(p.name) || p.name;
+        // When the PLANT FLOW starts at a dye plant ("BFL>>EXPO / Antler"), the fabric's first stop
+        // is the dye plant, not the print plant — so each leg reads "BFL >> EXPO" / "BFL >> ANTLER"
+        // and gets its own group, apart from that plant's plain (non-dye) lines.
+        const plantName = normalizeSinglePlant(p.name) || p.name;
+        const dyePlant = leadingDyePlant(String(row.col12 || ""));
+        const canonicalName =
+          dyePlant && normalizeSinglePlant(dyePlant) !== plantName ? `${dyePlant} >> ${plantName}` : plantName;
         const groupKey = canonicalName;
         if (!groups.has(groupKey)) {
           groups.set(groupKey, { plant: canonicalName, items: [] });

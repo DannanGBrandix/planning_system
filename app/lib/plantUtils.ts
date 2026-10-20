@@ -342,6 +342,23 @@ export function plantFromFlow(plantFlowRaw?: string | null): string {
 }
 
 /**
+ * The dye/wash vendor a PLANT FLOW (col12) STARTS with — "BFL" for "BFL>>EXPO / Antler" or
+ * "BFL (WA01055) >> ANTLER" — or "" when the first stage is a real plant (e.g. "CKT>>BFL>>CKT",
+ * where the dye step comes mid-chain, not first). Fabric Dispatch uses it to show the fabric's
+ * first stop in front of each leg's plant ("BFL >> EXPO", "BFL >> ANTLER"). Vendor list mirrors
+ * DYE_WASH_PLANT_NAMES in planningFlows.ts (not imported to avoid a circular import).
+ */
+export function leadingDyePlant(plantFlowRaw?: string | null): string {
+  const first = String(plantFlowRaw || "")
+    .split(/>>|->|=>|>/)
+    .map((s) => s.trim())
+    .find(Boolean);
+  if (!first) return "";
+  const u = first.toUpperCase();
+  return ["BFL", "MARTEX", "DYNAWASH"].find((name) => u.includes(name)) || "";
+}
+
+/**
  * The canonical plants a row belongs to for the dashboard's Plant filter: the plants in its Plant
  * column (col11), or — when col11 is blank — in the plant segment recovered from Plant Flow
  * (col12, see plantFromFlow). Aliases collapse via extractPlants, and a cross-dev
