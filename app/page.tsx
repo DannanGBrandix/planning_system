@@ -655,7 +655,12 @@ export default function Home() {
         processStr.includes("SEND TO WASH");
       const hasInvalidDyePills = hasDyePills && !isActualDye;
 
-      const hasCSRFPills = existingDateValues.some((v) => v.includes("CSRF") || v.includes("CPS"));
+      // CSRF also opens the Mock-Up / Garment flows (before SEWIN/SEWS, since 2026-10-20), so it's
+      // only a stray cut-panel pill when the row's own flow has no CSRF step.
+      const flowHasCsrf = detectMatchingFlow(r).sequence.includes("CSRF");
+      const hasCSRFPills = existingDateValues.some(
+        (v) => (v.includes("CSRF") && !flowHasCsrf) || v.includes("CPS"),
+      );
       const appFormStr = String(String(String(String(String(r.col15 || ""))))).toUpperCase();
       const isActualCutPanel = appFormStr.includes("CUT PANEL");
       const hasInvalidCutPanelPills = hasCSRFPills && !isActualCutPanel;
@@ -1754,6 +1759,8 @@ export default function Home() {
           { ...originalRow },
           flowId,
           startDateKey,
+          "S",
+          { freshPlan: true },
         ) as EmbellishmentRow;
         const producedDates = Object.keys(scheduledRow).some(
           (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && String((scheduledRow as Record<string, unknown>)[k] || "").trim(),

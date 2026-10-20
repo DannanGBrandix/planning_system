@@ -223,9 +223,10 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     id: 5,
     category: "MOCK-UPS",
     title: "Standard Mock-Ups Flow",
-    description: "Mock-up workflow starting from Sewing to FR, PPS, NY, MAST",
-    sequence: ["SEWIN/SEWS", "MOC", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    description: "Mock-up workflow starting from CSRF, Sewing to FR, PPS, NY, MAST",
+    sequence: ["CSRF", "SEWIN/SEWS", "MOC", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
@@ -236,15 +237,16 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
   {
     id: 6,
     category: "MOCK-UPS",
     title: "Mock-Ups with Emb Plant Strike-Off (PPSES)",
     description: "Mock-up workflow with Emb plant strike-off sending",
-    sequence: ["SEWIN/SEWS", "MOC", "FR", "PPSES", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    sequence: ["CSRF", "SEWIN/SEWS", "MOC", "FR", "PPSES", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSES", leadTimeDays: 1, label: "1d" },
@@ -256,15 +258,16 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
   {
     id: 7,
     category: "MOCK-UPS",
     title: "Mock-Ups with Dye Plant Strike-Off (PPSDS -> RDPS)",
     description: "Mock-up workflow with Dye plant strike-off and return dye panels",
-    sequence: ["SEWIN/SEWS", "MOC", "FR", "PPSDS", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    sequence: ["CSRF", "SEWIN/SEWS", "MOC", "FR", "PPSDS", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSDS", leadTimeDays: 1, label: "1d" },
@@ -277,7 +280,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 37,
+    totalLeadTimeDays: 38,
   },
 
   // ------------------------------------------------------------
@@ -287,9 +290,10 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     id: 8,
     category: "GARMENTS",
     title: "Standard Garments Flow",
-    description: "Full garment embellishment workflow from Sewing to Garment sending, FR, PPS",
-    sequence: ["SEWIN/SEWS", "GMT", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    description: "Full garment embellishment workflow from CSRF, Sewing to Garment sending, FR, PPS",
+    sequence: ["CSRF", "SEWIN/SEWS", "GMT", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
       { fromEvent: "GMT", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
@@ -300,15 +304,16 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
   {
     id: 9,
     category: "GARMENTS",
     title: "Garments with Emb Plant Strike-Off (PPSES)",
     description: "Garment workflow with Emb plant strike-off sending",
-    sequence: ["SEWIN/SEWS", "GMT", "FR", "PPSES", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    sequence: ["CSRF", "SEWIN/SEWS", "GMT", "FR", "PPSES", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
       { fromEvent: "GMT", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSES", leadTimeDays: 1, label: "1d" },
@@ -320,15 +325,16 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
   {
     id: 10,
     category: "GARMENTS",
     title: "Garments with Return Dye Panels (RDPS)",
     description: "Garment workflow with dye panel return prior to PPS",
-    sequence: ["SEWIN/SEWS", "GMT", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    sequence: ["CSRF", "SEWIN/SEWS", "GMT", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
       // 2 working days, same as the PPSDS -> RDPS dye step in fabrics/mock-ups (changed 2026-09-30).
       { fromEvent: "GMT", toEvent: "RDPS", leadTimeDays: 2, label: "2d" },
@@ -340,7 +346,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
 
   // ------------------------------------------------------------
@@ -769,8 +775,12 @@ export function detectPlanCycles(row: Record<string, unknown>): PlanCycle[] {
   if (events.length === 0) return [];
 
   // The flow's first milestone — "FS", or a combined slot like "SEWIN/SEWS" / "CSRF-FF".
-  const firstSlot = String(detectMatchingFlow(row).sequence[0] || "").toUpperCase();
+  const cycleFlow = detectMatchingFlow(row);
+  const firstSlot = String(cycleFlow.sequence[0] || "").toUpperCase();
   const firstParts = firstSlot.split("/").map((p) => p.split("-")[0].trim()).filter(Boolean);
+  // CSRF -> SEWIN/SEWS (Mock-Ups / Garments) open a cycle together: SEWIN straight after CSRF is
+  // still the same cycle, and an older cycle on the row planned before CSRF existed opens on SEWIN.
+  if (isCsrfSewinFlow(cycleFlow)) firstParts.push("SEWIN", "SEWS");
   const isFirstMilestone = (base: string) => {
     if (!firstSlot) return false;
     if (base === firstSlot) return true;
@@ -1025,7 +1035,41 @@ function detectMatchingFlowRaw(row: Record<string, unknown>): PlanningFlow {
  * those never go to New York, so no planning event should ever be generated for either milestone.
  */
 export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
-  return applyGraphicTypeSkip(row, detectMatchingFlowRaw(row));
+  const flow = applyGraphicTypeSkip(row, detectMatchingFlowRaw(row));
+  return isPreCsrfSewinPlan(row) ? dropCsrfOpener(flow) : flow;
+}
+
+// Mock-Up / Garment flows open with CSRF before SEWIN/SEWS since 2026-10-20. Plans made before
+// that start at SEWIN/SEWS and must stay exactly as they are: a pass/fail or move on one of them
+// rebuilds the whole flow from its earliest date, which would otherwise wedge a CSRF onto the old
+// SEWIN date and push every later milestone a day out. So a row that already carries events but
+// no CSRF anywhere keeps the old SEWIN-first flow; a row with no events yet (or one already planned
+// the new way) gets CSRF. A Replan from a picked date passes `freshPlan` to opt back in.
+function isCsrfSewinFlow(flow: PlanningFlow): boolean {
+  return flow.sequence[0] === "CSRF" && flow.sequence[1] === "SEWIN/SEWS";
+}
+
+function dropCsrfOpener(flow: PlanningFlow): PlanningFlow {
+  if (!isCsrfSewinFlow(flow)) return flow;
+  const steps = flow.steps.slice(1);
+  return {
+    ...flow,
+    sequence: flow.sequence.slice(1),
+    steps,
+    totalLeadTimeDays: steps.reduce((sum, s) => sum + s.leadTimeDays, 0),
+  };
+}
+
+function isPreCsrfSewinPlan(row: Record<string, unknown>): boolean {
+  let hasEvent = false;
+  for (const [k, v] of Object.entries(row)) {
+    if (!/^\d{4}-\d{2}-\d{2}(_.+)?$/.test(k)) continue;
+    const s = String(v ?? "").trim();
+    if (!s) continue;
+    hasEvent = true;
+    if (s.split("|")[0].split("-")[0].trim().toUpperCase() === "CSRF") return false;
+  }
+  return hasEvent;
 }
 
 /**
@@ -1346,7 +1390,9 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   // Planning Sheet / CK Tracking Chart), per the planner: an import shouldn't stamp NY/NYC
   // submission dates in on its own, only the milestones up to PPS. Manual scheduling (Auto-
   // Schedule button, Replan, Apply Flow, the Event Status Panel) is untouched and keeps NY/NYC.
-  options?: { skipNyNyc?: boolean }
+  // freshPlan: the planner is starting a new plan from startDateStr (Replan) — use the current
+  // flow (CSRF opener on Mock-Ups / Garments) even if the row's older plan predates it.
+  options?: { skipNyNyc?: boolean; freshPlan?: boolean }
 ): T {
   // STRICT GATE: a row gets planning events ONLY when it has BOTH a real Plant and a real S-Off
   // Requirement (hasCompleteAllocationContext). No S-Off Requirement -> no planning events, full
@@ -1383,9 +1429,13 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   });
   const pinnedKeys = new Set(Object.values(pinnedDateByCode));
 
-  let matchedFlow = flowId
-    ? applyGraphicTypeSkip(row, PLANNING_FLOWS.find((f) => f.id === flowId) || detectMatchingFlow(row))
-    : detectMatchingFlow(row);
+  let matchedFlow = applyGraphicTypeSkip(
+    row,
+    (flowId && PLANNING_FLOWS.find((f) => f.id === flowId)) || detectMatchingFlowRaw(row),
+  );
+  if (!options?.freshPlan && isPreCsrfSewinPlan(row)) {
+    matchedFlow = dropCsrfOpener(matchedFlow);
+  }
   if (options?.skipNyNyc) {
     matchedFlow = stripNyNyc(matchedFlow);
   }
