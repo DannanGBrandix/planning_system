@@ -5493,10 +5493,10 @@ export default function Home() {
   };
 
   // Filter rows based on search bar query OR active plant tab for department portal.
-  // skipGround: run every filter EXCEPT the Ground colour one — feeds the Ground dropdown, so it
-  // lists only the colours present under the other active filters (and stays listable once a
-  // ground is picked, instead of collapsing to that one entry).
-  const applyRowFilters = useCallback((skipGround: boolean) => {
+  // skip: run every filter EXCEPT the Ground colour (or Plant) one — feeds that dropdown, so it
+  // lists only the values present under the other active filters (and stays listable once one
+  // is picked, instead of collapsing to that one entry).
+  const applyRowFilters = useCallback((skip: "ground" | "plant" | null) => {
     // Show ALL versions in the main views (as requested by user)
     let result = [...draftRows, ...rows];
 
@@ -5547,12 +5547,12 @@ export default function Home() {
     // on the canonical plants in the Plant column (col11, or the Plant Flow chain when col11 is
     // blank), so a cross-dev "ANTLER/LEEMA" row shows under both ANTLER and LEEMA, and aliases
     // (CKT = HI EMB, AV1/AV2/BFFAV = AV …) collapse onto one entry.
-    if (selectedPlantFilter && viewMode !== "advanced") {
+    if (selectedPlantFilter && viewMode !== "advanced" && skip !== "plant") {
       result = result.filter((row) => rowFilterPlants(row).includes(selectedPlantFilter));
     }
 
     // Apply Ground colour Dropdown Filter (standard dashboard only) — case-insensitive on col8.
-    if (selectedGroundFilter && viewMode !== "advanced" && !skipGround) {
+    if (selectedGroundFilter && viewMode !== "advanced" && skip !== "ground") {
       result = result.filter(
         (row) => String(row.col8 || "").trim().toUpperCase() === selectedGroundFilter,
       );
@@ -5859,8 +5859,9 @@ export default function Home() {
     advancedSelections,
   ]);
 
-  const displayedRows = useMemo(() => applyRowFilters(false), [applyRowFilters]);
-  const groundScopeRows = useMemo(() => applyRowFilters(true), [applyRowFilters]);
+  const displayedRows = useMemo(() => applyRowFilters(null), [applyRowFilters]);
+  const groundScopeRows = useMemo(() => applyRowFilters("ground"), [applyRowFilters]);
+  const plantScopeRows = useMemo(() => applyRowFilters("plant"), [applyRowFilters]);
 
   // Same rows as displayedRows, but excluding archived (is_current: false) versions — for
   // rollup/summary views (Advanced Analytics, Action Center, Score Card, Fabric Dispatch,
@@ -6332,6 +6333,7 @@ export default function Home() {
                     setSelectedTeamFilter={setSelectedTeamFilter}
                     rows={rows}
                     groundRows={groundScopeRows}
+                    plantRows={plantScopeRows}
                     onOpenConfig={() => setIsConfigOpen(true)}
                     onResetDatabase={handleResetDatabase}
                     currentRole={currentRole}

@@ -1,4 +1,4 @@
-import { parseEventValue } from "./eventCodes";
+import { parseEventValue, encodeEventValue } from "./eventCodes";
 import { isSriLankaHoliday } from "./sriLankaHolidays";
 import { extractPlants } from "./plantUtils";
 
@@ -1390,9 +1390,11 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   // Planning Sheet / CK Tracking Chart), per the planner: an import shouldn't stamp NY/NYC
   // submission dates in on its own, only the milestones up to PPS. Manual scheduling (Auto-
   // Schedule button, Replan, Apply Flow, the Event Status Panel) is untouched and keeps NY/NYC.
-  // freshPlan: the planner is starting a new plan from startDateStr (Replan) — use the current
-  // flow (CSRF opener on Mock-Ups / Garments) even if the row's older plan predates it.
-  options?: { skipNyNyc?: boolean; freshPlan?: boolean }
+  // freshPlan: the planner is starting a new plan from startDateStr (Replan, or the flow's opener
+  // picked on a new day) — use the current flow (CSRF opener on Mock-Ups / Garments) even if the
+  // row's older plan predates it, and treat everything before startDateStr as an earlier cycle.
+  // cycleScoped is internal (set by the history split below) — callers never pass it.
+  options?: { skipNyNyc?: boolean; freshPlan?: boolean; cycleScoped?: boolean }
 ): T {
   // STRICT GATE: a row gets planning events ONLY when it has BOTH a real Plant and a real S-Off
   // Requirement (hasCompleteAllocationContext). No S-Off Requirement -> no planning events, full
@@ -1417,6 +1419,55 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
       }
     });
     return cleanRow as T;
+  }
+
+  // An earlier planning cycle on the row is history: it stays exactly as recorded and is never fed
+  // to the scheduler. Feeding it in let an old cycle's verdicts drive the new one — confirmed on
+  // GPS27-239 / 10336912: PPS failed 9/29, the retry was cleared, SEWIN set on 10/21 to plan again;
+  // the old PPS|F made the scheduler re-create the PPS 9/30 + NY 10/1 retry, cascade DTC-3010 onto
+  // the new SEWIN's day, and drop the new cycle's PPS/NY. The current cycle starts at startDateStr
+  // for a fresh plan, otherwise at the latest cycle detectPlanCycles finds (a pass/fail rebuild
+  // previously restarted from the row's EARLIEST date, i.e. the old cycle).
+  if (!options?.cycleScoped) {
+    let cycleStart: string | undefined;
+    if (options?.freshPlan && startDateStr) {
+      cycleStart = startDateStr;
+    } else if (!startDateStr) {
+      // Bare (shared-plan) keys only — that's all this rebuild touches. A cross-dev leg's own
+      // "<date>_<PLANT>" plan is not an earlier cycle of the shared plan (GVF27-083's _AV run from
+      // 10/20 made its whole shared plan look like history and got a duplicate one invented).
+      const bareOnly = Object.fromEntries(
+        Object.entries(row).filter(([k]) => !/^\d{4}-\d{2}-\d{2}_.+$/.test(k)),
+      );
+      const cycles = detectPlanCycles(bareOnly);
+      if (cycles.length > 1) cycleStart = cycles[cycles.length - 1].startKey;
+    }
+    const historyKeys = cycleStart
+      ? Object.keys(row).filter(
+          (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && k < cycleStart! && String(row[k] ?? "").trim(),
+        )
+      : [];
+    if (historyKeys.length > 0) {
+      const current: Record<string, unknown> = { ...row };
+      historyKeys.forEach((k) => delete current[k]);
+      const scheduled = autoScheduleEmbellishmentRow(
+        current as T,
+        flowId,
+        startDateStr,
+        eventSuffix,
+        { ...options, cycleScoped: true },
+      ) as Record<string, unknown>;
+      historyKeys.forEach((k) => {
+        // A fresh plan replaces the old run's still-projected "-S" pills (stale plan, not history —
+        // same rule as the whole-row Replan); real verdicts, pins and plant actuals stay. A plain
+        // rebuild of the current cycle leaves the earlier cycle completely untouched.
+        const v = String(row[k] ?? "");
+        scheduled[k] = options?.freshPlan && parseEventValue(v)?.status === "planned" && !parseEventValue(v)?.isPinned && /-S$/i.test(v.trim())
+          ? ""
+          : row[k];
+      });
+      return scheduled as T;
+    }
   }
 
   // Planner-locked ("|X") milestones: {BASECODE -> the YYYY-MM-DD key it sits on}. These are
@@ -1700,17 +1751,61 @@ export function autoScheduleAnchoredToEvent<T extends Record<string, unknown>>(
   anchorCode: string,
   anchorDateStr: string,
 ): T {
-  const flow = detectMatchingFlow(row);
+  let flow = detectMatchingFlow(row);
   const targetBase = anchorCode.split("|")[0].split("-")[0].trim().toUpperCase();
 
   // Match the picked code against a sequence slot, allowing combined slots like "SEWIN/SEWS".
-  const seqIndex = flow.sequence.findIndex((slot) =>
-    slot.split("/").some((part) => part.split("-")[0].trim().toUpperCase() === targetBase),
+  const slotIndex = (f: PlanningFlow) =>
+    f.sequence.findIndex(
+      (slot) =>
+        slot.toUpperCase() === targetBase ||
+        slot.split("/").some((part) => part.split("-")[0].trim().toUpperCase() === targetBase),
+    );
+  let seqIndex = slotIndex(flow);
+
+  // Picking the flow's opener (or CSRF) on a day is the planner starting a NEW plan from there:
+  // the current flow applies (CSRF before SEWIN/SEWS on Mock-Ups / Garments, even when the row's
+  // older plan predates it — so SEWIN picked on 10/21 gives CSRF 10/20, SEWIN 10/21), and any
+  // earlier cycle on the row is history the new plan must not read (see freshPlan).
+  // Moving the opener EARLIER inside a plan (every other event still after it) is a re-time of
+  // that same plan, not a new one — it keeps the row's own flow, as before.
+  const dated = Object.keys(row).filter(
+    (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && k !== anchorDateStr && String(row[k] ?? "").trim(),
   );
+  const startsNewPlan =
+    (seqIndex <= 0 || targetBase === "CSRF") &&
+    (dated.length === 0 || dated.some((k) => k < anchorDateStr));
+  if (startsNewPlan) {
+    flow = applyGraphicTypeSkip(row, detectMatchingFlowRaw(row));
+    seqIndex = slotIndex(flow);
+  }
+  const schedOpts = startsNewPlan ? { freshPlan: true } : undefined;
+
+  // A new plan starts ON the picked day, whichever opener was picked: SEWIN picked on 10/21 gives
+  // CSRF 10/21, SEWIN 10/22 — the planner reads the picked day as "planning starts here", not "SEWIN
+  // lands here" (back-solving put CSRF on the day before). The picked planned pill is dropped so
+  // the flow's real opener takes that day; if the planner locked it, the opener inherits the lock.
+  const pickedRaw = String(row[anchorDateStr] ?? "").trim();
+  const picked = pickedRaw ? parseEventValue(pickedRaw) : null;
+  if (startsNewPlan && (!picked || picked.status === "planned")) {
+    const input: Record<string, unknown> = { ...row, [anchorDateStr]: "" };
+    const scheduled = autoScheduleEmbellishmentRow(
+      input as T,
+      flow.id,
+      anchorDateStr,
+      "S",
+      schedOpts,
+    ) as Record<string, unknown>;
+    const opener = parseEventValue(String(scheduled[anchorDateStr] ?? ""));
+    if (picked?.isPinned && opener && opener.status === "planned") {
+      scheduled[anchorDateStr] = encodeEventValue(opener.code, "planned", undefined, true);
+    }
+    return scheduled as T;
+  }
 
   // First event in the flow (or a code this flow doesn't contain): the picked date IS the start.
   if (seqIndex <= 0) {
-    return autoScheduleEmbellishmentRow(row, flow.id, anchorDateStr);
+    return autoScheduleEmbellishmentRow(row, flow.id, anchorDateStr, "S", schedOpts);
   }
 
   // Sum the lead times from the first event up to the picked one (steps[i] is the transition
@@ -1724,18 +1819,23 @@ export function autoScheduleAnchoredToEvent<T extends Record<string, unknown>>(
   const anchorBaseOf = (v: unknown) => String(v).split("|")[0].split("-")[0].toUpperCase();
 
   let startStr = toISO(subtractWorkingDays(new Date(anchorDateStr), cumulativeDays));
-  let scheduled = autoScheduleEmbellishmentRow(row, flow.id, startStr) as Record<string, unknown>;
+  let scheduled = autoScheduleEmbellishmentRow(row, flow.id, startStr, "S", schedOpts) as Record<string, unknown>;
 
   // One correction pass: public holidays between the start and the anchor can make the anchor
   // land a day or two off the picked date. Measure the gap and nudge the start to close it.
+  // Only the new run (on/after its start) counts — an earlier cycle can hold the same milestone.
   const landedKey = Object.keys(scheduled).find(
-    (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && typeof scheduled[k] === "string" && anchorBaseOf(scheduled[k]) === targetBase,
+    (k) =>
+      /^\d{4}-\d{2}-\d{2}$/.test(k) &&
+      k >= startStr &&
+      typeof scheduled[k] === "string" &&
+      anchorBaseOf(scheduled[k]) === targetBase,
   );
   if (landedKey && landedKey !== anchorDateStr) {
     const drift = Math.round((new Date(landedKey).getTime() - new Date(anchorDateStr).getTime()) / 86_400_000);
     if (drift > 0) startStr = toISO(subtractWorkingDays(new Date(startStr), drift));
     else if (drift < 0) startStr = toISO(addWorkingDays(new Date(startStr), -drift));
-    scheduled = autoScheduleEmbellishmentRow(row, flow.id, startStr) as Record<string, unknown>;
+    scheduled = autoScheduleEmbellishmentRow(row, flow.id, startStr, "S", schedOpts) as Record<string, unknown>;
   }
 
   return scheduled as T;

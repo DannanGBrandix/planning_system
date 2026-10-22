@@ -24,6 +24,8 @@ interface FilterControlsProps {
   rows: EmbellishmentRow[];
   // Rows left by every active filter except Ground — scopes the Ground dropdown. Falls back to rows.
   groundRows?: EmbellishmentRow[];
+  // Rows left by every active filter except Plant — scopes the Plant dropdown. Falls back to rows.
+  plantRows?: EmbellishmentRow[];
   onOpenConfig: () => void;
   onResetDatabase: () => void;
   onOpenExcelImporter?: () => void;
@@ -58,6 +60,7 @@ export default function FilterControls({
   setColorFilter,
   rows,
   groundRows,
+  plantRows,
   onOpenConfig,
   onResetDatabase,
   currentRole,
@@ -123,14 +126,17 @@ export default function FilterControls({
   }, [rows, selectedCategoryFilter, selectedSeasonFilter]);
 
   // Plants for the Plant Filter Dropdown, with row counts — canonical names (aliases merged),
-  // each plant of a cross-dev "/" split counted on its own.
+  // each plant of a cross-dev "/" split counted on its own. Only the plants under the other
+  // active filters (Category, Season, Status, ...) are listed. A picked plant stays listed even
+  // if the other filters leave it no rows, so the select never shows a blank value.
   const plantCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    rows.forEach((r) => {
+    (plantRows ?? rows).forEach((r) => {
       rowFilterPlants(r).forEach((p) => counts.set(p, (counts.get(p) || 0) + 1));
     });
+    if (selectedPlantFilter && !counts.has(selectedPlantFilter)) counts.set(selectedPlantFilter, 0);
     return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [rows]);
+  }, [plantRows, rows, selectedPlantFilter]);
 
   // Ground colours (col8) for the Ground Filter Dropdown, with row counts. Keyed upper-cased so
   // casing variants collapse onto one entry; the label keeps the first spelling seen. Only the
@@ -527,7 +533,7 @@ export default function FilterControls({
               className="appearance-none flex items-center gap-1.5 pl-3.5 pr-8 py-2 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-700 dark:text-zinc-300 cursor-pointer max-w-[160px] truncate"
               title="Filter by Plant"
             >
-              <option value="" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Plants</option>
+              <option value="" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Plants ({(plantRows ?? rows).length})</option>
               {plantCounts.map(([plant, count]) => (
                 <option key={plant} value={plant} className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">
                   {plant} ({count})
