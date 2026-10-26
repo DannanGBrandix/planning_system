@@ -3562,12 +3562,18 @@ export default function Home() {
             if (dhlTrackingStr) {
               // Look for patterns like "DHL 7/16" or "AWB: 07/16"
               const dhlMatch = dhlTrackingStr.match(/(?:DHL|AWB|DTC|LTD)[-\s:]*(\d{1,2})\/(\d{1,2})/i);
+              let dhlDateKey = "";
               if (dhlMatch) {
                 const month = dhlMatch[1].padStart(2, '0');
                 const day = dhlMatch[2].padStart(2, '0');
                 const year = new Date().getFullYear();
-                const dhlDateKey = `${year}-${month}-${day}`; 
-                
+                dhlDateKey = `${year}-${month}-${day}`;
+              } else {
+                // PINK/VS charts write the courier as a person, not "DHL": "Victoria - 10/20 -
+                // 4560464451". Without this the NY was never marked for those rows (GPS27-079 C34).
+                dhlDateKey = extractDateFromTrackingText(dhlTrackingStr, null) || "";
+              }
+              if (dhlDateKey) {
                 // Set to NY because it was sent
                 formattedRow[dhlDateKey] = "NY";
                 dhlNyKey = dhlDateKey;

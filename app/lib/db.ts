@@ -114,8 +114,10 @@ export function cleanSeason(season: string): string {
   if (s === "SUMMER 2027") return "SU27";
   if (s === "HOLIDAY 2026") return "HO26";
   if (s === "HOLIDAY 2027") return "HO27";
-  if (s === "WINTER 2026") return "WI26";
-  if (s === "WINTER 2027") return "WI27";
+  // Winter is "WL" (the CK charts' own code, WL27) — older imports stored "WI27" for the same
+  // season, which split it in two in the season filter. Every winter spelling collapses to WL.
+  if (s === "WINTER 2026") return "WL26";
+  if (s === "WINTER 2027") return "WL27";
 
   // Extract just the leading season token — "<letters><year>" at the start — and drop anything
   // after it. Tracking charts often cram the whole season string into one column, e.g.
@@ -131,13 +133,13 @@ export function cleanSeason(season: string): string {
      }
 
      // Normalize common prefixes to the app's 2-letter form (SP27, SU27, FA26, …). Single-letter
-     // codes from tracking charts are the same season: F26 == FA26, H27 == HO27, W27 == WI27.
+     // codes from tracking charts are the same season: F26 == FA26, H27 == HO27, W27 == WI27 == WL27.
      // "S" alone is left as-is — it's ambiguous between Spring and Summer.
      if (text === "HOLIDAY" || text === "HOL" || text === "H") text = "HO";
      else if (text === "FALL" || text === "F") text = "FA";
      else if (text === "SPRING" || text === "SPR") text = "SP";
      else if (text === "SUMMER" || text === "SUM") text = "SU";
-     else if (text === "WINTER" || text === "WIN" || text === "W") text = "WI";
+     else if (text === "WINTER" || text === "WIN" || text === "W" || text === "WI") text = "WL";
 
      return `${text}${year}`;
   }
@@ -147,9 +149,9 @@ export function cleanSeason(season: string): string {
   // its 100 rows (the rest just say "SU27"). Left as-is that whole string became col4, failed the
   // import's season guard against the existing "SU27" rows, and every one showed up as a
   // duplicate "New Record". Look for a known season token anywhere in the value instead.
-  const inner = s.match(/(?:^|[^A-Z0-9])(SU|SP|FA|HO|WI|SUMMER|SPRING|FALL|HOLIDAY|WINTER)\s*'?\s*(?:20)?(\d{2})(?![0-9])/);
+  const inner = s.match(/(?:^|[^A-Z0-9])(SU|SP|FA|HO|WI|WL|SUMMER|SPRING|FALL|HOLIDAY|WINTER)\s*'?\s*(?:20)?(\d{2})(?![0-9])/);
   if (inner) {
-    const map: Record<string, string> = { SUMMER: "SU", SPRING: "SP", FALL: "FA", HOLIDAY: "HO", WINTER: "WI" };
+    const map: Record<string, string> = { SUMMER: "SU", SPRING: "SP", FALL: "FA", HOLIDAY: "HO", WINTER: "WL", WI: "WL" };
     return `${map[inner[1]] || inner[1]}${inner[2]}`;
   }
 
@@ -1468,6 +1470,8 @@ export function hasBuy(r: EmbellishmentRow): boolean {
 // by the graphic number itself (DEV_GRAPHIC_RE) so a new DEV row with a blank Graphic Type is
 // excluded without anyone having to tag it first.
 const ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES = ["branding", "trial", "dev"];
+// "VN" (added 2026-10-22) — whole-word only: two letters as a substring would catch unrelated types.
+const ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPE_RE = /(^|[^A-Z])VN([^A-Z]|$)/i;
 const DEV_GRAPHIC_RE = /(^|[^A-Z])DEV([^A-Z]|$)/i;
 export function isDevGraphic(graphic: unknown): boolean {
   return DEV_GRAPHIC_RE.test(String(graphic || ""));
@@ -1476,6 +1480,7 @@ export function isExcludedFromAdvancedAnalytics(r: EmbellishmentRow): boolean {
   const graphicType = String(r.col19 || "").toLowerCase();
   return (
     ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES.some((t) => graphicType.includes(t)) ||
+    ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPE_RE.test(graphicType) ||
     isDevGraphic(r.col7)
   );
 }
@@ -1486,12 +1491,16 @@ export function isDevRow(r: EmbellishmentRow): boolean {
 }
 
 // Advanced Analytics' "Dev graphics" toggle (2026-10-14): off = the normal view (DEV rows left out,
-// see above); on = ONLY the DEV rows, through the same cards and charts. Branding/Trial stay out
+// see above); on = ONLY the DEV rows, through the same cards and charts. Branding/Trial/VN stay out
 // of both.
 export function isInAdvancedAnalytics(r: EmbellishmentRow, devMode: boolean): boolean {
   if (!devMode) return !isExcludedFromAdvancedAnalytics(r);
   const graphicType = String(r.col19 || "").toLowerCase();
-  return isDevRow(r) && !["branding", "trial"].some((t) => graphicType.includes(t));
+  return (
+    isDevRow(r) &&
+    !["branding", "trial"].some((t) => graphicType.includes(t)) &&
+    !ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPE_RE.test(graphicType)
+  );
 }
 
 // Standard Dashboard (Submission Pending card + Status "Submission Pending" filter): when the
