@@ -26,6 +26,16 @@ interface FilterControlsProps {
   groundRows?: EmbellishmentRow[];
   // Rows left by every active filter except Plant — scopes the Plant dropdown. Falls back to rows.
   plantRows?: EmbellishmentRow[];
+  // Rows left by every active filter except Trigger — scopes the Trigger dropdown. Falls back to rows.
+  triggerRows?: EmbellishmentRow[];
+  // Same idea for Category, Season, DHL and Color Approval: rows left by every OTHER filter.
+  categoryRows?: EmbellishmentRow[];
+  seasonRows?: EmbellishmentRow[];
+  dhlRows?: EmbellishmentRow[];
+  colorRows?: EmbellishmentRow[];
+  // Rows each Status / Plan option would show under the other active filters.
+  statusCounts?: Partial<Record<string, number>>;
+  planStatusCounts?: Partial<Record<string, number>>;
   onOpenConfig: () => void;
   onResetDatabase: () => void;
   onOpenExcelImporter?: () => void;
@@ -61,6 +71,13 @@ export default function FilterControls({
   rows,
   groundRows,
   plantRows,
+  triggerRows,
+  categoryRows,
+  seasonRows,
+  dhlRows,
+  colorRows,
+  statusCounts,
+  planStatusCounts,
   onOpenConfig,
   onResetDatabase,
   currentRole,
@@ -88,42 +105,40 @@ export default function FilterControls({
     };
   }, []);
 
-  // Unique categories for Category Filter Dropdown
-  const uniqueCategories = useMemo(() => {
-    const set = new Set<string>();
-    rows.forEach((r) => {
-      if (r.col3 && String(String(String(String(r.col3 || "")))).trim()) set.add(String(String(String(String(r.col3 || "")))).trim());
+  // Category / Season dropdown values with row counts — like Plant and Trigger, only the values
+  // under the other active filters are listed (a picked value stays listed even at 0).
+  const countBy = (list: EmbellishmentRow[], key: "col3" | "col4", keep: string | undefined) => {
+    const counts = new Map<string, number>();
+    list.forEach((r) => {
+      const v = String(r[key] || "").trim();
+      if (v) counts.set(v, (counts.get(v) || 0) + 1);
     });
-    return Array.from(set).sort();
-  }, [rows]);
+    if (keep && !counts.has(keep)) counts.set(keep, 0);
+    return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  };
+  const categoryCounts = useMemo(
+    () => countBy(categoryRows ?? rows, "col3", selectedCategoryFilter),
+    [categoryRows, rows, selectedCategoryFilter],
+  );
+  const seasonCounts = useMemo(
+    () => countBy(seasonRows ?? rows, "col4", selectedSeasonFilter),
+    [seasonRows, rows, selectedSeasonFilter],
+  );
+  const optCount = (counts: Partial<Record<string, number>> | undefined, key: string) =>
+    counts && counts[key] !== undefined ? ` (${counts[key]})` : "";
 
-  // Unique seasons for Season Filter Dropdown
-  const uniqueSeasons = useMemo(() => {
-    const set = new Set<string>();
-    rows.forEach((r) => {
-      if (r.col4 && String(String(String(String(r.col4 || "")))).trim()) set.add(String(String(String(String(r.col4 || "")))).trim());
+  // Triggers for the Trigger dropdown, with row counts — like the Plant dropdown, only the
+  // triggers under the other active filters (Category, Season, Status, Plan, search, ...) are listed.
+  const triggerCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    (triggerRows ?? rows).forEach((r) => {
+      const t = String(r.col2 || "").trim();
+      if (t && t !== "N/A" && t !== "-") counts.set(t, (counts.get(t) || 0) + 1);
     });
-    return Array.from(set).sort();
-  }, [rows]);
-
-  // Dependent trigger filter: only shows triggers for selected category and season
-  const availableTriggers = useMemo(() => {
-    let filtered = rows;
-    if (selectedCategoryFilter && selectedCategoryFilter !== "") {
-      filtered = filtered.filter(r => String(String(String(String(r.col3 || "")))).trim() === selectedCategoryFilter);
-    }
-    if (selectedSeasonFilter && selectedSeasonFilter !== "") {
-      filtered = filtered.filter(r => String(String(String(String(r.col4 || "")))).trim() === selectedSeasonFilter);
-    }
-    const set = new Set<string>();
-    filtered.forEach(r => {
-      const t = String(String(String(String(r.col2 || "")))).trim();
-      if (t && t !== "N/A" && t !== "-") {
-        set.add(t);
-      }
-    });
-    return Array.from(set).sort();
-  }, [rows, selectedCategoryFilter, selectedSeasonFilter]);
+    return counts;
+  }, [triggerRows, rows]);
+  const availableTriggers = useMemo(() => Array.from(triggerCounts.keys()).sort(), [triggerCounts]);
+  const triggerTotal = (triggerRows ?? rows).length;
 
   // Plants for the Plant Filter Dropdown, with row counts — canonical names (aliases merged),
   // each plant of a cross-dev "/" split counted on its own. Only the plants under the other
@@ -180,22 +195,22 @@ export default function FilterControls({
 
   // Count of rows with DHL tracking and without
   const dhlRowCount = useMemo(() => {
-    return rows.filter((r) => (String(String(String(String(r.col24 || ""))))).trim() !== "").length;
-  }, [rows]);
+    return (dhlRows ?? rows).filter((r) => (String(String(String(String(r.col24 || ""))))).trim() !== "").length;
+  }, [dhlRows, rows]);
 
   const noDhlRowCount = useMemo(() => {
-    return rows.filter((r) => !isRowSent(r)).length;
-  }, [rows]);
+    return (dhlRows ?? rows).filter((r) => !isRowSent(r)).length;
+  }, [dhlRows, rows]);
 
   // Combo counts for the Color Approval filter (Approved combos only, like the Advanced card).
   const colorCounts = useMemo(() => {
     let colorApproved = 0, missingColor = 0;
-    colorApprovalByCombo(rows).forEach((s) => {
+    colorApprovalByCombo(colorRows ?? rows).forEach((s) => {
       if (s === "colorApproved") colorApproved++;
       else missingColor++;
     });
     return { colorApproved, missingColor };
-  }, [rows]);
+  }, [colorRows, rows]);
 
   const hasActiveFilters = Boolean(
     searchQuery ||
@@ -404,14 +419,14 @@ export default function FilterControls({
               className="appearance-none flex items-center gap-1.5 pl-3.5 pr-8 py-2 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-700 dark:text-zinc-300 cursor-pointer max-w-[140px] truncate"
               title="Filter by Status"
             >
-              <option value="Active" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Active Items</option>
-              <option value="Approved" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Approved Items</option>
-              <option value="C+P" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">C+P Items</option>
-              <option value="Pending" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Submission Pending</option>
-              <option value="Resubmit" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Resubmit Items</option>
-              <option value="Hold" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Hold (Cross Dev)</option>
-              <option value="Dropped" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Dropped Items</option>
-              <option value="All" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Items</option>
+              <option value="Active" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Active Items{optCount(statusCounts, "Active")}</option>
+              <option value="Approved" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Approved Items{optCount(statusCounts, "Approved")}</option>
+              <option value="C+P" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">C+P Items{optCount(statusCounts, "C+P")}</option>
+              <option value="Pending" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Submission Pending{optCount(statusCounts, "Pending")}</option>
+              <option value="Resubmit" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Resubmit Items{optCount(statusCounts, "Resubmit")}</option>
+              <option value="Hold" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Hold (Cross Dev){optCount(statusCounts, "Hold")}</option>
+              <option value="Dropped" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Dropped Items{optCount(statusCounts, "Dropped")}</option>
+              <option value="All" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Items{optCount(statusCounts, "All")}</option>
             </select>
             <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-zinc-500 dark:text-zinc-400">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -435,10 +450,10 @@ export default function FilterControls({
               className="appearance-none flex items-center gap-1.5 pl-3.5 pr-8 py-2 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-700 dark:text-zinc-300 cursor-pointer max-w-[150px] truncate"
               title="Filter by Plan Status"
             >
-              <option value="All" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Plan: All</option>
-              <option value="Active" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Plan: Active</option>
-              <option value="Dropped" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Plan: Dropped</option>
-              <option value="Unplanned" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Plan: Unplanned</option>
+              <option value="All" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Plan: All{optCount(planStatusCounts, "All")}</option>
+              <option value="Active" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Plan: Active{optCount(planStatusCounts, "Active")}</option>
+              <option value="Dropped" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Plan: Dropped{optCount(planStatusCounts, "Dropped")}</option>
+              <option value="Unplanned" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Plan: Unplanned{optCount(planStatusCounts, "Unplanned")}</option>
             </select>
             <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-zinc-500 dark:text-zinc-400">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -458,10 +473,10 @@ export default function FilterControls({
               className="appearance-none flex items-center gap-1.5 pl-3.5 pr-8 py-2 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-700 dark:text-zinc-300 cursor-pointer max-w-[180px] truncate"
               title="Filter by Category"
             >
-              <option value="" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Categories ({rows.length})</option>
-              {uniqueCategories.map((cat) => (
+              <option value="" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Categories ({(categoryRows ?? rows).length})</option>
+              {categoryCounts.map(([cat, count]) => (
                 <option key={cat} value={cat} className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">
-                  {cat}
+                  {cat} ({count})
                 </option>
               ))}
             </select>
@@ -483,10 +498,10 @@ export default function FilterControls({
               className="appearance-none flex items-center gap-1.5 pl-3.5 pr-8 py-2 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-700 dark:text-zinc-300 cursor-pointer max-w-[140px] truncate"
               title="Filter by Season"
             >
-              <option value="" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Seasons</option>
-              {uniqueSeasons.map((season) => (
+              <option value="" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Seasons ({(seasonRows ?? rows).length})</option>
+              {seasonCounts.map(([season, count]) => (
                 <option key={season} value={season} className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">
-                  {season}
+                  {season} ({count})
                 </option>
               ))}
             </select>
@@ -502,6 +517,8 @@ export default function FilterControls({
         {selectedTriggerFilter !== undefined && setSelectedTriggerFilter && (
           <TriggerMultiSelect
             options={availableTriggers}
+            counts={triggerCounts}
+            total={triggerTotal}
             selected={selectedTriggerFilter}
             onChange={setSelectedTriggerFilter}
           />
@@ -629,7 +646,7 @@ export default function FilterControls({
               }`}
               title="Filter by DHL tracking status"
             >
-              <option value="all" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">• DHL Tracking ({dhlRowCount})</option>
+              <option value="all" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">• DHL Tracking ({(dhlRows ?? rows).length})</option>
               <option value="withDhl" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">With DHL ({dhlRowCount})</option>
               <option value="noDhl" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">Not Dispatched — No DHL ({noDhlRowCount})</option>
             </select>
@@ -729,10 +746,14 @@ export default function FilterControls({
 // trigger stays listed even when Category/Season no longer offer it, so it can be unticked.
 function TriggerMultiSelect({
   options,
+  counts,
+  total,
   selected,
   onChange,
 }: {
   options: string[];
+  counts: Map<string, number>;
+  total: number;
   selected: string[];
   onChange: (triggers: string[]) => void;
 }) {
@@ -754,7 +775,7 @@ function TriggerMultiSelect({
   const toggle = (t: string) =>
     onChange(selected.includes(t) ? selected.filter((x) => x !== t) : [...selected, t]);
   const label =
-    selected.length === 0 ? "All Triggers" : selected.length === 1 ? selected[0] : `${selected.length} Triggers`;
+    selected.length === 0 ? `All Triggers (${total})` : selected.length === 1 ? selected[0] : `${selected.length} Triggers`;
 
   return (
     <div className="relative" ref={ref}>
@@ -775,7 +796,7 @@ function TriggerMultiSelect({
         <div className="absolute z-50 mt-1 min-w-[180px] max-h-72 overflow-y-auto bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-xl py-1 text-xs">
           <label className="flex items-center gap-2 px-3 py-1.5 font-semibold text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 cursor-pointer border-b border-zinc-100 dark:border-zinc-700">
             <input type="checkbox" checked={selected.length === 0} onChange={() => onChange([])} />
-            All Triggers
+            All Triggers ({total})
           </label>
           {list.map((t) => (
             <label
@@ -783,7 +804,7 @@ function TriggerMultiSelect({
               className="flex items-center gap-2 px-3 py-1.5 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 cursor-pointer"
             >
               <input type="checkbox" checked={selected.includes(t)} onChange={() => toggle(t)} />
-              {t}
+              {t} ({counts.get(t) || 0})
             </label>
           ))}
         </div>

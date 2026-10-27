@@ -136,6 +136,49 @@ function classifyFillColor(rgbHex: string): "grey" | "green" | "pink" | "none" {
   return "none";
 }
 
+type StatusFilterValue = "All" | "Active" | "Dropped" | "Hold" | "Approved" | "C+P" | "Pending" | "Resubmit";
+type PlanStatusFilterValue = "All" | "Active" | "Dropped" | "Unplanned";
+// Which dashboard dropdown a filter pass leaves out, so that dropdown can list (and count) only
+// the values present under every OTHER active filter. null = apply everything.
+type FilterSkip = "ground" | "plant" | "trigger" | "category" | "season" | "status" | "planStatus" | "dhl" | "color" | null;
+
+// The Status dropdown's filter on its own, shared by the filter pass and the dropdown's counts.
+function filterRowsByStatus(result: EmbellishmentRow[], status: StatusFilterValue): EmbellishmentRow[] {
+  if (status === "Active") {
+    // "Active" excludes both Dropped and Hold (CK "H" — CROSS DEVELOPMENT): a held item is
+    // paused, not a live submission, so it's kept out of the working set like a dropped one.
+    return result.filter((row) => {
+      const s = getRowStatus(row);
+      return s !== "dropped" && s !== "hold";
+    });
+  }
+  if (status === "Dropped") return result.filter((row) => getRowStatus(row) === "dropped");
+  if (status === "Hold") return result.filter((row) => getRowStatus(row) === "hold");
+  if (status === "Approved") return result.filter((row) => getRowStatus(row) === "approved");
+  if (status === "C+P") return result.filter((row) => getRowStatus(row) === "c+p");
+  if (status === "Pending") {
+    // The actual submission pendings — same rule as the Submission Pending card: combos
+    // (Style|Graphic|Combo|Ground) whose strike-off hasn't gone to NY yet (no DHL / strike-off
+    // comment on any live row; CK on its SP code), Branding/Trial left out. One row per combo
+    // so the table count equals the card, not one line per trigger (KNIT + LOUNGE twins).
+    return groupRowsByCombo(analyticsScopedRows(result))
+      .filter((g) => getGroupStatus(g) === "pending")
+      .map((g) => g.find((r) => getRowStatus(r) === "pending") ?? g[0]);
+  }
+  if (status === "Resubmit") return result.filter((row) => getRowStatus(row) === "resubmit");
+  return result;
+}
+
+// Plan Status (col47) filter on its own — planning-lifecycle flag.
+function filterRowsByPlanStatus(result: EmbellishmentRow[], status: PlanStatusFilterValue): EmbellishmentRow[] {
+  if (status === "All") return result;
+  return result.filter((row) => {
+    const ps = derivePlanStatus(row as unknown as Record<string, unknown>);
+    if (status === "Unplanned") return ps === "";
+    return ps === status;
+  });
+}
+
 export default function Home() {
   // App states
   const [rows, setRows] = useState<EmbellishmentRow[]>([]);
@@ -5582,7 +5625,7 @@ export default function Home() {
   // skip: run every filter EXCEPT the Ground colour (or Plant) one — feeds that dropdown, so it
   // lists only the values present under the other active filters (and stays listable once one
   // is picked, instead of collapsing to that one entry).
-  const applyRowFilters = useCallback((skip: "ground" | "plant" | null) => {
+  const applyRowFilters = useCallback((skip: FilterSkip) => {
     // Show ALL versions in the main views (as requested by user)
     let result = [...draftRows, ...rows];
 
@@ -5609,21 +5652,21 @@ export default function Home() {
     // multi-select Category filter in the sidebar (same rationale as the Team filter above).
     // Without this skip, a single Category picked on the standard dashboard silently caps
     // what the advanced view can ever show, so its own multi-select could never widen past it.
-    if (selectedCategoryFilter && viewMode !== "advanced") {
+    if (selectedCategoryFilter && viewMode !== "advanced" && skip !== "category") {
       result = result.filter(
         (row) => (String(String(String(String(row.col3 || ""))))).trim() === selectedCategoryFilter,
       );
     }
 
     // Apply Season Dropdown Filter (also skipped in advanced mode — sidebar has its own)
-    if (selectedSeasonFilter && viewMode !== "advanced") {
+    if (selectedSeasonFilter && viewMode !== "advanced" && skip !== "season") {
       result = result.filter(
         (row) => (String(String(String(String(row.col4 || ""))))).trim() === selectedSeasonFilter,
       );
     }
 
     // Apply Trigger Dropdown Filter
-    if (selectedTriggerFilter.length > 0) {
+    if (selectedTriggerFilter.length > 0 && skip !== "trigger") {
       result = result.filter(
         (row) => selectedTriggerFilter.includes(String(row.col2 || "").trim()),
       );
@@ -5657,24 +5700,23 @@ export default function Home() {
       viewMode === "advanced"
         ? advancedSelections.trigger.length > 0
         : selectedTriggerFilter.length > 0;
-    if (!aTriggerPicked && !operationalView) {
+    // The Trigger dropdown's own scope keeps hidden event triggers, so they can still be picked.
+    if (!aTriggerPicked && !operationalView && skip !== "trigger") {
       result = result.filter((row) => !isHiddenEventTrigger(row.col2));
     }
 
     // Apply Plan Status (col47) Filter — planning-lifecycle flag, standard dashboard only.
-    if (selectedPlanStatusFilter !== "All" && viewMode !== "advanced") {
-      result = result.filter((row) => {
-        const ps = derivePlanStatus(row as unknown as Record<string, unknown>);
-        if (selectedPlanStatusFilter === "Unplanned") return ps === "";
-        return ps === selectedPlanStatusFilter;
-      });
+    if (selectedPlanStatusFilter !== "All" && viewMode !== "advanced" && skip !== "planStatus") {
+      result = filterRowsByPlanStatus(result, selectedPlanStatusFilter);
     }
 
     // Apply DHL Tracking Filter (3-state: all, withDhl, noDhl)
     // "noDhl" = Not Dispatched: rows with no DHL, no comments, no AOQ, not approved (i.e. !isRowSent).
     // This is a DISPATCH filter, not the status "Submission Pending" — that lives on the Status
     // dropdown ("Pending" = getRowStatus === "pending") and on DashboardStats card #5.
-    if (dhlFilter === "withDhl") {
+    if (skip === "dhl") {
+      // DHL dropdown's own scope — leave the DHL filter out.
+    } else if (dhlFilter === "withDhl") {
       result = result.filter((row) => (String(String(String(String(row.col24 || ""))))).trim() !== "");
     } else if (dhlFilter === "noDhl") {
       result = result.filter((row) => !isRowSent(row));
@@ -5685,39 +5727,14 @@ export default function Home() {
     // twin row in another Category with the same Style|Graphic|Combo|Ground (e.g. a PINK SP27 row
     // ticked ✓ Color Approval) mark the VS-SLEEP combo colour-approved, so "Missing Color" showed
     // 11 while the card said 14 missing.
-    if (colorFilter !== "all") {
+    if (colorFilter !== "all" && skip !== "color") {
       const byCombo = colorApprovalByCombo(result);
       result = result.filter((row) => byCombo.get(comboKeyOf(row)) === colorFilter);
     }
 
     // Apply Status Filter (Bypass in Advanced Mode so the Sidebar Filters can handle status)
-    if (viewMode !== "advanced") {
-      if (selectedStatusFilter === "Active") {
-        // "Active" excludes both Dropped and Hold (CK "H" — CROSS DEVELOPMENT): a held item is
-        // paused, not a live submission, so it's kept out of the working set like a dropped one.
-        result = result.filter((row) => {
-          const s = getRowStatus(row);
-          return s !== "dropped" && s !== "hold";
-        });
-      } else if (selectedStatusFilter === "Dropped") {
-        result = result.filter((row) => getRowStatus(row) === "dropped");
-      } else if (selectedStatusFilter === "Hold") {
-        result = result.filter((row) => getRowStatus(row) === "hold");
-      } else if (selectedStatusFilter === "Approved") {
-        result = result.filter((row) => getRowStatus(row) === "approved");
-      } else if (selectedStatusFilter === "C+P") {
-        result = result.filter((row) => getRowStatus(row) === "c+p");
-      } else if (selectedStatusFilter === "Pending") {
-        // The actual submission pendings — same rule as the Submission Pending card: combos
-        // (Style|Graphic|Combo|Ground) whose strike-off hasn't gone to NY yet (no DHL / strike-off
-        // comment on any live row; CK on its SP code), Branding/Trial left out. One row per combo
-        // so the table count equals the card, not one line per trigger (KNIT + LOUNGE twins).
-        result = groupRowsByCombo(analyticsScopedRows(result))
-          .filter((g) => getGroupStatus(g) === "pending")
-          .map((g) => g.find((r) => getRowStatus(r) === "pending") ?? g[0]);
-      } else if (selectedStatusFilter === "Resubmit") {
-        result = result.filter((row) => getRowStatus(row) === "resubmit");
-      }
+    if (viewMode !== "advanced" && skip !== "status") {
+      result = filterRowsByStatus(result, selectedStatusFilter);
     }
 
     // Apply strict plant department tab filters
@@ -5948,6 +5965,28 @@ export default function Home() {
   const displayedRows = useMemo(() => applyRowFilters(null), [applyRowFilters]);
   const groundScopeRows = useMemo(() => applyRowFilters("ground"), [applyRowFilters]);
   const plantScopeRows = useMemo(() => applyRowFilters("plant"), [applyRowFilters]);
+  const triggerScopeRows = useMemo(() => applyRowFilters("trigger"), [applyRowFilters]);
+  const categoryScopeRows = useMemo(() => applyRowFilters("category"), [applyRowFilters]);
+  const seasonScopeRows = useMemo(() => applyRowFilters("season"), [applyRowFilters]);
+  const dhlScopeRows = useMemo(() => applyRowFilters("dhl"), [applyRowFilters]);
+  const colorScopeRows = useMemo(() => applyRowFilters("color"), [applyRowFilters]);
+  // Status / Plan dropdown counts: how many rows each option would show under the other filters.
+  const statusScopeRows = useMemo(() => applyRowFilters("status"), [applyRowFilters]);
+  const statusOptionCounts = useMemo(() => {
+    const out: Partial<Record<StatusFilterValue, number>> = {};
+    (["Active", "Approved", "C+P", "Pending", "Resubmit", "Hold", "Dropped", "All"] as StatusFilterValue[]).forEach(
+      (s) => (out[s] = filterRowsByStatus(statusScopeRows, s).length),
+    );
+    return out;
+  }, [statusScopeRows]);
+  const planStatusScopeRows = useMemo(() => applyRowFilters("planStatus"), [applyRowFilters]);
+  const planStatusOptionCounts = useMemo(() => {
+    const out: Partial<Record<PlanStatusFilterValue, number>> = {};
+    (["All", "Active", "Dropped", "Unplanned"] as PlanStatusFilterValue[]).forEach(
+      (s) => (out[s] = filterRowsByPlanStatus(planStatusScopeRows, s).length),
+    );
+    return out;
+  }, [planStatusScopeRows]);
 
   // Same rows as displayedRows, but excluding archived (is_current: false) versions — for
   // rollup/summary views (Advanced Analytics, Action Center, Score Card, Fabric Dispatch,
@@ -6420,6 +6459,13 @@ export default function Home() {
                     rows={rows}
                     groundRows={groundScopeRows}
                     plantRows={plantScopeRows}
+                    triggerRows={triggerScopeRows}
+                    categoryRows={categoryScopeRows}
+                    seasonRows={seasonScopeRows}
+                    dhlRows={dhlScopeRows}
+                    colorRows={colorScopeRows}
+                    statusCounts={statusOptionCounts}
+                    planStatusCounts={planStatusOptionCounts}
                     onOpenConfig={() => setIsConfigOpen(true)}
                     onResetDatabase={handleResetDatabase}
                     currentRole={currentRole}
