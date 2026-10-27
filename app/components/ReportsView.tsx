@@ -208,6 +208,9 @@ export default function ReportsView({ rows }: ReportsViewProps) {
       groups.filter((g) => {
         const status = getGroupStatus(g.memberRows);
         if (status === "dropped" || status === "hold") return false;
+        // Branding graphics (Graphic Type col19, e.g. VV-15066) never go through colour approval —
+        // keep them off this list.
+        if (g.memberRows.some((r) => /branding/i.test(String(r.col19 || "")))) return false;
         return !g.memberRows.some(hasColorApproval);
       }),
     [groups],
