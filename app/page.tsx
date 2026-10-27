@@ -157,7 +157,8 @@ export default function Home() {
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
     useState<string>("");
   const [selectedSeasonFilter, setSelectedSeasonFilter] = useState<string>("");
-  const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string>("");
+  // Multi-select: empty = all triggers.
+  const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string[]>([]);
   const [selectedPlantFilter, setSelectedPlantFilter] = useState<string>("");
   // Ground colour (col8) filter — stored upper-cased so "Dress Blues" / "DRESS BLUES" match alike.
   const [selectedGroundFilter, setSelectedGroundFilter] = useState<string>("");
@@ -3303,6 +3304,15 @@ export default function Home() {
           otherReplanReason: boolean;
         }[] = [];
 
+        // Extra updates for sibling style rows of a multi-style chart line (see the
+        // "One chart line, several style rows" block at the end of the map below).
+        const sharedStyleSiblingItems: ParsedImportItem[] = [];
+        // Strike-off tracking a multi-style chart line shares with each of its style rows.
+        const SHARED_STRIKE_OFF_KEYS = [
+          "col1", "col20", "col22", "col24", "col34", "col35", "col39", "col40", "col41", "col42",
+          "awb1", "awb2", "awb1Date", "awb2Date", "dropDate",
+        ];
+
         const parsedItemsList: ParsedImportItem[] = rawData.map(
           (row, index) => {
             const formattedRow: Partial<EmbellishmentRow> = {};
@@ -4573,37 +4583,47 @@ export default function Home() {
             // Both chart-DERIVED dates (DHL -> NY, fabric-in -> FR) are only for rows with no plan
             // yet: on a row that already has events they're dropped here, so they never count as
             // "incoming dates" and never trigger the wipe below.
-            const nyPassKeys: string[] = [];
-            if (existingMatchHasEvents && fabricFrKey && formattedRow[fabricFrKey] === "FR") {
-              delete formattedRow[fabricFrKey];
-            }
-            if (existingMatch && dhlNyKey) {
+            // The row's own planned NY(s) — one per plan (bare / each leg) — that this DHL date is,
+            // i.e. the nearest still-planned NY within DHL_NY_MATCH_MAX_DAYS. Null when the row has
+            // no NY at all (then the DHL-date NY fallback key is kept instead).
+            const plannedNyKeysForDhl = (target: EmbellishmentRow, dhlKey: string): string[] | null => {
               const nyGroups = new Map<string, string[]>(); // "" = bare plan, else leg suffix
-              Object.entries(existingMatch).forEach(([k, v]) => {
+              Object.entries(target).forEach(([k, v]) => {
                 const m = k.match(/^(\d{4}-\d{2}-\d{2})(_.+)?$/);
                 if (!m || typeof v !== "string" || !v.trim()) return;
                 if (parseEventValue(v)?.code.toUpperCase() !== "NY") return;
                 const g = m[2] || "";
                 nyGroups.set(g, [...(nyGroups.get(g) || []), k]);
               });
-              if (nyGroups.size > 0) {
+              if (nyGroups.size === 0) return null;
+              const dhlTime = Date.parse(dhlKey);
+              const out: string[] = [];
+              nyGroups.forEach((keys) => {
+                const planned = keys.filter(
+                  (k) => parseEventValue(String((target as Record<string, unknown>)[k]))?.status === "planned",
+                );
+                if (planned.length === 0) return; // this plan's NY already has a verdict
+                const nearest = planned.reduce((a, b) =>
+                  Math.abs(Date.parse(b.slice(0, 10)) - dhlTime) < Math.abs(Date.parse(a.slice(0, 10)) - dhlTime) ? b : a,
+                );
+                // Only a DHL sent CLOSE to the planned NY is that NY happening. A DHL weeks away is
+                // a different submission (e.g. DHL 9/9 for the layout strike-off vs an NY planned
+                // 9/28 for the colour-approval round) — that planned NY must stay open, not green.
+                const gapDays = Math.abs(Date.parse(nearest.slice(0, 10)) - dhlTime) / 86_400_000;
+                if (gapDays > DHL_NY_MATCH_MAX_DAYS) return;
+                out.push(nearest);
+              });
+              return out;
+            };
+            const nyPassKeys: string[] = [];
+            if (existingMatchHasEvents && fabricFrKey && formattedRow[fabricFrKey] === "FR") {
+              delete formattedRow[fabricFrKey];
+            }
+            if (existingMatch && dhlNyKey) {
+              const keys = plannedNyKeysForDhl(existingMatch, dhlNyKey);
+              if (keys) {
                 delete formattedRow[dhlNyKey];
-                const dhlTime = Date.parse(dhlNyKey);
-                nyGroups.forEach((keys) => {
-                  const planned = keys.filter(
-                    (k) => parseEventValue(String(existingMatch![k]))?.status === "planned",
-                  );
-                  if (planned.length === 0) return; // this plan's NY already has a verdict
-                  const nearest = planned.reduce((a, b) =>
-                    Math.abs(Date.parse(b.slice(0, 10)) - dhlTime) < Math.abs(Date.parse(a.slice(0, 10)) - dhlTime) ? b : a,
-                  );
-                  // Only a DHL sent CLOSE to the planned NY is that NY happening. A DHL weeks away is
-                  // a different submission (e.g. DHL 9/9 for the layout strike-off vs an NY planned
-                  // 9/28 for the colour-approval round) — that planned NY must stay open, not green.
-                  const gapDays = Math.abs(Date.parse(nearest.slice(0, 10)) - dhlTime) / 86_400_000;
-                  if (gapDays > DHL_NY_MATCH_MAX_DAYS) return;
-                  nyPassKeys.push(nearest); // applied after the merge below
-                });
+                nyPassKeys.push(...keys); // applied after the merge below
               }
             }
 
@@ -5055,6 +5075,65 @@ export default function Home() {
               }
             }
 
+            // One chart line, several style rows: the PINK/VS charts write a combo shared by two
+            // styles on ONE line ("10352038/10352033"), while the database can hold each style as
+            // its own row for the same Graphic + Combo. Only the first matched row used to get the
+            // DHL / comments, so its twin sat at "Submission Pending" forever (GPF27-417 C1/C2,
+            // GPF27-112 C2). Copy this line's strike-off tracking onto every such sibling row —
+            // same Graphic + Combo, its style(s) all named on this line — and mark the sibling's
+            // own planned NY green for the DHL, exactly as for the matched row.
+            if (
+              existingMatch &&
+              matchedFromDb &&
+              !effectiveSkipNewRows &&
+              !ckGraphicOnlyIdentity &&
+              incomingStyleTokens.size > 1 &&
+              (isVsOrPinkCategory(incomingCategory) || isVsOrPinkCategory(existingMatch.col3))
+            ) {
+              const matchedId = existingMatch.id;
+              const siblings = rows.filter((r) => {
+                if (r.id === matchedId || r.is_current === false) return false;
+                if (normalize(r.col7) !== incomingGraphic) return false;
+                if (normalizeCombo(r.col6) !== incomingCombo) return false;
+                const tokens = splitStyleTokens(normalize(r.col5 || ""));
+                return (
+                  tokens.length > 0 &&
+                  tokens.every((t) => incomingStyleTokens.has(t)) &&
+                  seasonCategoryCompatible(r) &&
+                  groundCompatible(r) &&
+                  categoryLineCompatible(r)
+                );
+              });
+              siblings.forEach((sib) => {
+                const sibRow = { ...sib } as Record<string, unknown>;
+                const diffs: { key: string; label: string; oldVal: string; newVal: string }[] = [];
+                Object.keys(finalRow).forEach((k) => {
+                  if (!SHARED_STRIKE_OFF_KEYS.includes(k) && !k.startsWith("nycv:")) return;
+                  const nv = String((finalRow as Record<string, unknown>)[k] ?? "").trim();
+                  const ov = String(sibRow[k] ?? "").trim();
+                  if (!nv || nv === ov) return;
+                  sibRow[k] = (finalRow as Record<string, unknown>)[k];
+                  diffs.push({ key: k, label: columns[k] || DEFAULT_COLUMNS[k] || k, oldVal: ov, newVal: nv });
+                });
+                if (dhlNyKey) {
+                  (plannedNyKeysForDhl(sib, dhlNyKey) || []).forEach((k) => {
+                    sibRow[k] = encodeEventValue("NY", "pass");
+                    diffs.push({ key: k, label: k, oldVal: String(sib[k as keyof EmbellishmentRow] ?? ""), newVal: "NY pass" });
+                  });
+                }
+                if (diffs.length === 0) return;
+                sibRow.__diffsJson = JSON.stringify(diffs);
+                sharedStyleSiblingItems.push({
+                  mergedRow: sibRow as EmbellishmentRow,
+                  matchType: "style",
+                  trackingNo: String(sibRow.col24 || "").trim(),
+                  styleCode: String(sibRow.col5 || "").trim(),
+                  graphic: String(sibRow.col7 || "").trim(),
+                  combo: String(sibRow.col6 || "").trim(),
+                });
+              });
+            }
+
             return {
               mergedRow: finalRow,
               matchType,
@@ -5065,6 +5144,7 @@ export default function Home() {
             };
           },
         ).filter(Boolean) as ParsedImportItem[];
+        parsedItemsList.push(...sharedStyleSiblingItems);
 
         // Deliberately NOT persisted into the app-wide column config (unlike before). Each
         // unrecognized header still gets its value written onto the row under its own minted
@@ -5543,9 +5623,9 @@ export default function Home() {
     }
 
     // Apply Trigger Dropdown Filter
-    if (selectedTriggerFilter) {
+    if (selectedTriggerFilter.length > 0) {
       result = result.filter(
-        (row) => (String(String(String(String(row.col2 || ""))))).trim() === selectedTriggerFilter,
+        (row) => selectedTriggerFilter.includes(String(row.col2 || "").trim()),
       );
     }
 
@@ -5576,7 +5656,7 @@ export default function Home() {
     const aTriggerPicked =
       viewMode === "advanced"
         ? advancedSelections.trigger.length > 0
-        : !!selectedTriggerFilter;
+        : selectedTriggerFilter.length > 0;
     if (!aTriggerPicked && !operationalView) {
       result = result.filter((row) => !isHiddenEventTrigger(row.col2));
     }

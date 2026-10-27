@@ -5,7 +5,7 @@ import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import EventStatusPanel from "./EventStatusPanel";
 import { parseEventValue } from "../lib/eventCodes";
-import { parseCrossDevGroups, normalizeSinglePlant, leadingDyePlant } from "../lib/plantUtils";
+import { parseCrossDevGroups, normalizeSinglePlant, leadingDyePlant, isWashDyeStage } from "../lib/plantUtils";
 import { getPlanningCategory } from "../lib/planningFlows";
 
 interface FabricDispatchViewProps {
@@ -226,6 +226,14 @@ export default function FabricDispatchView({ rows, onUpdateRow }: FabricDispatch
         parsedPlants = parseCrossDevGroups(
           String(row.col12 || "").replace(/\(.*?\)/g, "").replace(/\s+/g, " ").trim(),
         );
+      }
+
+      // A dye/wash vendor written into the PLANT chain ("LEEMA >> BFL", "BFL >>Antler") is a
+      // processing step, not a second place the fabric is dispatched to — it used to get its own
+      // "BFL" FR line (10359089 / 10359694, Project G). Keep only the real plants; a leading dye
+      // vendor still shows as the "BFL >> ANTLER" prefix via leadingDyePlant.
+      if (parsedPlants.some((p) => !isWashDyeStage(p.name))) {
+        parsedPlants = parsedPlants.filter((p) => !isWashDyeStage(p.name));
       }
 
       if (parsedPlants.length === 0) {

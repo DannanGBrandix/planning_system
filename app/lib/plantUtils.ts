@@ -319,6 +319,15 @@ export function parseCrossDevGroups(raw?: string | null): CrossDevGroup[] {
 }
 
 /**
+ * Is this chain stage a wash/dye vendor (BFL / MARTEX / DYNAWASH / a "WASH" step) rather than an
+ * embellishment plant? Shared by plantFromFlow and Fabric Dispatch.
+ */
+export function isWashDyeStage(stage: string): boolean {
+  const u = String(stage || "").toUpperCase();
+  return u.includes("BFL") || u.includes("MARTEX") || u.includes("DYNAWASH") || /\bWASH\b/i.test(stage);
+}
+
+/**
  * Fallback: recover the Plant (col11) from the Plant Flow (col12) chain when col11 is blank.
  * The Plant Flow spells out the same locations plus the wash/dye vendor and its sequence, e.g.
  * "BFL WA01055>>REGAL" or "REGAL IMAGE/MRC>>BFL WA01055>>REGAL IMAGE/MRC". Split on ">>"/">", drop
@@ -329,15 +338,11 @@ export function parseCrossDevGroups(raw?: string | null): CrossDevGroup[] {
 export function plantFromFlow(plantFlowRaw?: string | null): string {
   const raw = String(plantFlowRaw || "").trim();
   if (!raw) return "";
-  const isWashDye = (seg: string) => {
-    const u = seg.toUpperCase();
-    return u.includes("BFL") || u.includes("MARTEX") || u.includes("DYNAWASH") || /\bWASH\b/i.test(seg);
-  };
   const segments = raw
     .split(/>>|->|=>|>/)
     .map((s) => s.trim())
     .filter(Boolean);
-  const real = segments.find((s) => !isWashDye(s));
+  const real = segments.find((s) => !isWashDyeStage(s));
   return real || "";
 }
 

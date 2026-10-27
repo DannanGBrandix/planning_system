@@ -11,8 +11,8 @@ interface FilterControlsProps {
   setSelectedCategoryFilter?: (category: string) => void;
   selectedSeasonFilter?: string;
   setSelectedSeasonFilter?: (season: string) => void;
-  selectedTriggerFilter?: string;
-  setSelectedTriggerFilter?: (trigger: string) => void;
+  selectedTriggerFilter?: string[];
+  setSelectedTriggerFilter?: (triggers: string[]) => void;
   selectedPlantFilter?: string;
   setSelectedPlantFilter?: (plant: string) => void;
   selectedGroundFilter?: string;
@@ -204,7 +204,7 @@ export default function FilterControls({
     (colorFilter && colorFilter !== "all") ||
     (selectedCategoryFilter && selectedCategoryFilter !== "") ||
     (selectedSeasonFilter && selectedSeasonFilter !== "") ||
-    (selectedTriggerFilter && selectedTriggerFilter !== "") ||
+    (selectedTriggerFilter && selectedTriggerFilter.length > 0) ||
     (selectedPlantFilter && selectedPlantFilter !== "") ||
     (selectedGroundFilter && selectedGroundFilter !== "") ||
     (selectedTeamFilter && selectedTeamFilter !== "All Teams")
@@ -217,7 +217,7 @@ export default function FilterControls({
     if (setColorFilter) setColorFilter("all");
     if (setSelectedCategoryFilter) setSelectedCategoryFilter("");
     if (setSelectedSeasonFilter) setSelectedSeasonFilter("");
-    if (setSelectedTriggerFilter) setSelectedTriggerFilter("");
+    if (setSelectedTriggerFilter) setSelectedTriggerFilter([]);
     if (setSelectedPlantFilter) setSelectedPlantFilter("");
     if (setSelectedGroundFilter) setSelectedGroundFilter("");
     if (setSelectedTeamFilter) setSelectedTeamFilter("All Teams");
@@ -498,29 +498,13 @@ export default function FilterControls({
           </div>
         )}
 
-        {/* Trigger Filter Dropdown */}
+        {/* Trigger Filter — multi-select (tick several triggers, none ticked = All Triggers) */}
         {selectedTriggerFilter !== undefined && setSelectedTriggerFilter && (
-          <div className="relative">
-            <select
-              suppressHydrationWarning
-              value={selectedTriggerFilter}
-              onChange={(e) => setSelectedTriggerFilter(e.target.value)}
-              className="appearance-none flex items-center gap-1.5 pl-3.5 pr-8 py-2 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-700 dark:text-zinc-300 cursor-pointer max-w-[140px] truncate"
-              title="Filter by Trigger"
-            >
-              <option value="" className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">All Triggers</option>
-              {availableTriggers.map((trigger) => (
-                <option key={trigger} value={trigger} className="text-zinc-900 dark:text-zinc-100 bg-white dark:bg-zinc-800">
-                  {trigger}
-                </option>
-              ))}
-            </select>
-            <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-zinc-500 dark:text-zinc-400">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
-            </div>
-          </div>
+          <TriggerMultiSelect
+            options={availableTriggers}
+            selected={selectedTriggerFilter}
+            onChange={setSelectedTriggerFilter}
+          />
         )}
 
         {/* Plant Filter Dropdown */}
@@ -737,6 +721,73 @@ export default function FilterControls({
         )}
 
       </div>
+    </div>
+  );
+}
+
+// Checkbox dropdown for the Trigger filter. Styled like the neighbouring <select>s; a picked
+// trigger stays listed even when Category/Season no longer offer it, so it can be unticked.
+function TriggerMultiSelect({
+  options,
+  selected,
+  onChange,
+}: {
+  options: string[];
+  selected: string[];
+  onChange: (triggers: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
+  const list = useMemo(
+    () => Array.from(new Set([...options, ...selected])).sort(),
+    [options, selected],
+  );
+  const toggle = (t: string) =>
+    onChange(selected.includes(t) ? selected.filter((x) => x !== t) : [...selected, t]);
+  const label =
+    selected.length === 0 ? "All Triggers" : selected.length === 1 ? selected[0] : `${selected.length} Triggers`;
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 pl-3.5 pr-8 py-2 bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border border-zinc-200 dark:border-zinc-800 rounded-xl text-xs font-semibold shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-700 dark:text-zinc-300 cursor-pointer max-w-[160px] truncate"
+        title={selected.length ? `Triggers: ${selected.join(", ")}` : "Filter by Trigger"}
+      >
+        <span className="truncate">{label}</span>
+      </button>
+      <div className="absolute inset-y-0 right-0 pr-2.5 flex items-center pointer-events-none text-zinc-500 dark:text-zinc-400">
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </div>
+      {open && (
+        <div className="absolute z-50 mt-1 min-w-[180px] max-h-72 overflow-y-auto bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg shadow-xl py-1 text-xs">
+          <label className="flex items-center gap-2 px-3 py-1.5 font-semibold text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 cursor-pointer border-b border-zinc-100 dark:border-zinc-700">
+            <input type="checkbox" checked={selected.length === 0} onChange={() => onChange([])} />
+            All Triggers
+          </label>
+          {list.map((t) => (
+            <label
+              key={t}
+              className="flex items-center gap-2 px-3 py-1.5 text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-700 cursor-pointer"
+            >
+              <input type="checkbox" checked={selected.includes(t)} onChange={() => toggle(t)} />
+              {t}
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

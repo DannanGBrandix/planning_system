@@ -1424,7 +1424,12 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
 //   2. a bare "COLOR APPROVED" / "COLORS APPROVED" line — frequently appended on its own row
 //      under a comment that only signed off tech/layout (planner confirmed these count).
 //      APPROVED must sit immediately after COLOR(S) so "COLOR NOT APPROVED" can't match.
+//   3. a final NA sign-off on a dated strike-off — "NA 10/16: S/off dtd 9/28, Approved." /
+//      "S/O dated 8/14 - Approved" (VS AE SP27 chart). APPROVED must END the phrase (then
+//      "." "," ";" a line break or the end), so "S/O DATED 9/19/26 APPROVED LAYOUT/ TECH/ EX",
+//      "… Approved for layout" and "… Approved via email" (tech/layout only) don't count.
 const COLOR_APPROVED_RE = /(?:APPROVED|APP)\s+(?:FOR\s+)?[A-Z0-9\/,&\s]*\bCOLOU?RS?\b|\bCOLOU?RS?\s+APPROVED\b/;
+const SOFF_DATED_APPROVED_RE = /\bS\s*\/\s*O(?:FF)?\s+(?:DTD|DATED)\.?\s*\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?\s*[,:;.\-]?\s*APPROVED[ \t]*(?:[.,;\n\r]|$)/m;
 export function hasColorApproval(r: EmbellishmentRow): boolean {
   // A Color Approval (col41) the planner ticked "✓ Approved" by hand counts even when no
   // strike-off comment says so. Only "Y" is honoured — "N" is what "Sync Approval Cols" writes
@@ -1432,7 +1437,7 @@ export function hasColorApproval(r: EmbellishmentRow): boolean {
   if (String(r.col41 || '').trim().toUpperCase() === 'Y') return true;
   const c22 = String(r.col22 || '').toUpperCase();
   const c34 = String(r.col34 || '').toUpperCase();
-  return COLOR_APPROVED_RE.test(c22) || COLOR_APPROVED_RE.test(c34);
+  return [c22, c34].some((c) => COLOR_APPROVED_RE.test(c) || SOFF_DATED_APPROVED_RE.test(c));
 }
 
 // Detects placement sign-off from col42 ("Placement Approval"). This column now carries the
