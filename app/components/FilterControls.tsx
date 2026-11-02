@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { EmbellishmentRow, isRowSent, colorApprovalByCombo } from "../lib/db";
+import { EmbellishmentRow, isRowSent, colorApprovalByCombo, isOnBuyList } from "../lib/db";
 import { rowFilterPlants } from "../lib/plantUtils";
 
 interface FilterControlsProps {
@@ -21,6 +21,8 @@ interface FilterControlsProps {
   setDhlFilter?: (dhlFilter: "all" | "withDhl" | "noDhl") => void;
   colorFilter?: "all" | "colorApproved" | "missingColor";
   setColorFilter?: (colorFilter: "all" | "colorApproved" | "missingColor") => void;
+  buyOnly?: boolean;
+  setBuyOnly?: (buyOnly: boolean) => void;
   rows: EmbellishmentRow[];
   // Rows left by every active filter except Ground — scopes the Ground dropdown. Falls back to rows.
   groundRows?: EmbellishmentRow[];
@@ -33,6 +35,7 @@ interface FilterControlsProps {
   seasonRows?: EmbellishmentRow[];
   dhlRows?: EmbellishmentRow[];
   colorRows?: EmbellishmentRow[];
+  buyRows?: EmbellishmentRow[];
   // Rows each Status / Plan option would show under the other active filters.
   statusCounts?: Partial<Record<string, number>>;
   planStatusCounts?: Partial<Record<string, number>>;
@@ -68,6 +71,8 @@ export default function FilterControls({
   setDhlFilter,
   colorFilter,
   setColorFilter,
+  buyOnly,
+  setBuyOnly,
   rows,
   groundRows,
   plantRows,
@@ -76,6 +81,7 @@ export default function FilterControls({
   seasonRows,
   dhlRows,
   colorRows,
+  buyRows,
   statusCounts,
   planStatusCounts,
   onOpenConfig,
@@ -212,11 +218,14 @@ export default function FilterControls({
     return { colorApproved, missingColor };
   }, [colorRows, rows]);
 
+  const buyCount = useMemo(() => (buyRows ?? rows).filter(isOnBuyList).length, [buyRows, rows]);
+
   const hasActiveFilters = Boolean(
     searchQuery ||
     selectedGraphicFilter ||
     (dhlFilter && dhlFilter !== "all") ||
     (colorFilter && colorFilter !== "all") ||
+    buyOnly ||
     (selectedCategoryFilter && selectedCategoryFilter !== "") ||
     (selectedSeasonFilter && selectedSeasonFilter !== "") ||
     (selectedTriggerFilter && selectedTriggerFilter.length > 0) ||
@@ -230,6 +239,7 @@ export default function FilterControls({
     setSelectedGraphicFilter("");
     if (setDhlFilter) setDhlFilter("all");
     if (setColorFilter) setColorFilter("all");
+    if (setBuyOnly) setBuyOnly(false);
     if (setSelectedCategoryFilter) setSelectedCategoryFilter("");
     if (setSelectedSeasonFilter) setSelectedSeasonFilter("");
     if (setSelectedTriggerFilter) setSelectedTriggerFilter([]);
@@ -684,6 +694,30 @@ export default function FilterControls({
               </svg>
             </div>
           </div>
+        )}
+
+        {/* Has Buy — only graphics/combos on the buy list (col48 "Y"). Turning it on also switches
+            Status to All: most buy rows are Approved, which the default "Active" status hides. */}
+        {buyOnly !== undefined && setBuyOnly && (
+          <button
+            type="button"
+            onClick={() => {
+              const next = !buyOnly;
+              setBuyOnly(next);
+              if (next && setSelectedStatusFilter) setSelectedStatusFilter("All");
+            }}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border cursor-pointer ${
+              buyOnly
+                ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 shadow-xs"
+                : "bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 text-zinc-700 dark:text-zinc-300 border-zinc-200 dark:border-zinc-800"
+            }`}
+            title="Show only graphics/combos on the buy list (Buy = Y)"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+            </svg>
+            Has Buy ({buyCount})
+          </button>
         )}
 
         {currentRole === "Planner" && selectedTeamFilter !== undefined && setSelectedTeamFilter && (

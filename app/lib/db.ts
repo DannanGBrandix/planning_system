@@ -1465,6 +1465,12 @@ export function hasBuy(r: EmbellishmentRow): boolean {
   return hasColorApproval(r);
 }
 
+// Strictly on the buy list — col48 explicitly "Y" (the planner's toggle or a buy-list import),
+// no colour-approval fallback. Drives the Dashboard's "Has Buy" filter button.
+export function isOnBuyList(r: EmbellishmentRow): boolean {
+  return String(r.col48 || '').trim().toUpperCase() === 'Y';
+}
+
 // Graphic Type (col19) values the business does NOT want inflating Advanced Analytics'
 // counts, charts, or tables — "branding" (logo/care-label brandings, not real graphic
 // developments) and "trial" (added 2026-09-15, same reasoning: not a production graphic).

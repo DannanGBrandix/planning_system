@@ -47,6 +47,7 @@ import {
   getGroupStatus,
   getLastRowsSync,
   RowsSyncInfo,
+  isOnBuyList,
 } from "./lib/db";
 import Table from "./components/Table";
 import ColumnConfigModal from "./components/ColumnConfigModal";
@@ -140,7 +141,7 @@ type StatusFilterValue = "All" | "Active" | "Dropped" | "Hold" | "Approved" | "C
 type PlanStatusFilterValue = "All" | "Active" | "Dropped" | "Unplanned";
 // Which dashboard dropdown a filter pass leaves out, so that dropdown can list (and count) only
 // the values present under every OTHER active filter. null = apply everything.
-type FilterSkip = "ground" | "plant" | "trigger" | "category" | "season" | "status" | "planStatus" | "dhl" | "color" | null;
+type FilterSkip = "ground" | "plant" | "trigger" | "category" | "season" | "status" | "planStatus" | "dhl" | "color" | "buy" | null;
 
 // The Status dropdown's filter on its own, shared by the filter pass and the dropdown's counts.
 function filterRowsByStatus(result: EmbellishmentRow[], status: StatusFilterValue): EmbellishmentRow[] {
@@ -213,6 +214,8 @@ export default function Home() {
   // Color Approval filter — combo-level, Approved combos only (same basis as the Advanced
   // Analytics Color Approval card): with a colour sign-off vs. still missing one.
   const [colorFilter, setColorFilter] = useState<"all" | "colorApproved" | "missingColor">("all");
+  // "Has Buy" button — only rows explicitly on the buy list (col48 "Y"), see isOnBuyList.
+  const [buyOnly, setBuyOnly] = useState(false);
   const [slaFilter, setSlaFilter] = useState<"all" | "overdue" | "dueSoon" | "priority">("all");
   const [advancedSelections, setAdvancedSelections] =
     useState<FilterSelections>({
@@ -4592,30 +4595,11 @@ export default function Home() {
               mergedRow.__isSplitProcess = "true";
             }
 
-            // If the user uploads an Excel file to serve as the source of truth, and the Excel row
-            // has no tracking data, we should CLEAR the database tracking data to fix corrupted/wrong details.
-            if (existingMatch) {
-              const hasAwb = String(
-                row["__awb2"] || row["__awb1"] || "",
-              ).trim();
-              const hasRawAwb = Object.entries(row).some(([k, v]) => {
-                if (k.startsWith("__")) return false;
-                const sv = String(String(String(String(v || ""))))
-                  .trim()
-                  .toUpperCase();
-                return (
-                  sv.includes("DTC-") ||
-                  sv.includes("LTD-") ||
-                  sv.startsWith("DHL") ||
-                  sv.startsWith("AWB")
-                );
-              });
-
-              if (!hasAwb && !hasRawAwb) {
-                mergedRow["col24"] = ""; // Clear DHL tracking
-                mergedRow["col35"] = ""; // Clear Strike-Off submission #
-              }
-            }
+            // A chart line with no AWB no longer CLEARS the row's DHL (col24) / Strike-Off
+            // submission # (col35). Planners type DHLs into the app before NY updates the chart;
+            // re-importing F27 PINK (2026-11-02) wiped 11 hand-entered "Victoria - 10/28 - …" DHLs
+            // and pushed those combos back to Submission Pending. A non-blank AWB on the chart still
+            // overwrites via the normal merge below; to remove a wrong DHL, clear it in the app.
 
             // Sent to NY (DHL on the chart) and the matched row already has an NY in its plan: mark
             // the row's OWN planned NY green (per plan: the bare plan and every per-leg
@@ -5732,6 +5716,10 @@ export default function Home() {
       result = result.filter((row) => byCombo.get(comboKeyOf(row)) === colorFilter);
     }
 
+    if (buyOnly && skip !== "buy") {
+      result = result.filter(isOnBuyList);
+    }
+
     // Apply Status Filter (Bypass in Advanced Mode so the Sidebar Filters can handle status)
     if (viewMode !== "advanced" && skip !== "status") {
       result = filterRowsByStatus(result, selectedStatusFilter);
@@ -5953,6 +5941,7 @@ export default function Home() {
     selectedGroundFilter,
     dhlFilter,
     colorFilter,
+    buyOnly,
     slaFilter,
     searchQuery,
     currentRole,
@@ -5970,6 +5959,7 @@ export default function Home() {
   const seasonScopeRows = useMemo(() => applyRowFilters("season"), [applyRowFilters]);
   const dhlScopeRows = useMemo(() => applyRowFilters("dhl"), [applyRowFilters]);
   const colorScopeRows = useMemo(() => applyRowFilters("color"), [applyRowFilters]);
+  const buyScopeRows = useMemo(() => applyRowFilters("buy"), [applyRowFilters]);
   // Status / Plan dropdown counts: how many rows each option would show under the other filters.
   const statusScopeRows = useMemo(() => applyRowFilters("status"), [applyRowFilters]);
   const statusOptionCounts = useMemo(() => {
@@ -6454,6 +6444,9 @@ export default function Home() {
                     setDhlFilter={setDhlFilter}
                     colorFilter={colorFilter}
                     setColorFilter={setColorFilter}
+                    buyOnly={buyOnly}
+                    setBuyOnly={setBuyOnly}
+                    buyRows={buyScopeRows}
                     selectedTeamFilter={selectedTeamFilter}
                     setSelectedTeamFilter={setSelectedTeamFilter}
                     rows={rows}
