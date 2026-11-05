@@ -682,6 +682,14 @@ export default function AdvancedDashboard({
   // Technique Category (col18), stacked by Risk Factor (col17) so risk is visible at a glance, with the
   // full plant breakdown (col11) surfaced in the tooltip since a technique is often split
   // across several plants.
+  // Risk filter for the Techniques chart + the "Which Plants Run Each Technique" cards below it.
+  // "high" narrows both to High Risk items only, so you see the high-risk techniques and exactly
+  // which plants are running them.
+  const [techRiskFilter, setTechRiskFilter] = useState<"all" | "high" | "low">("all");
+  const riskBucketOf = (r: EmbellishmentRow): "high" | "low" | "unrated" => {
+    const raw = String(r.col17 || "").trim().toUpperCase();
+    return raw.includes("HIGH") ? "high" : raw.includes("LOW") ? "low" : "unrated";
+  };
   const techniqueChartData = useMemo(() => {
     const map = new Map<
       string,
@@ -690,6 +698,7 @@ export default function AdvancedDashboard({
 
     rows.forEach((r) => {
       if (getRowStatus(r) === 'dropped') return; // dropped graphics aren't run by any plant
+      if (techRiskFilter !== "all" && riskBucketOf(r) !== techRiskFilter) return;
       const tc = techniqueGroupForRow(r);
       if (!tc) return;
       const technique = tc.label;
@@ -740,7 +749,8 @@ export default function AdvancedDashboard({
       })
       .sort((a, b) => b.total - a.total)
       .slice(0, 12); // keep the chart simple to read — top 12 techniques by volume
-  }, [rows]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, techRiskFilter]);
 
   // Plant x Technique table under the techniques chart: which plants are running each technique
   // and how many items. Plants come from col11 split into individual canonical plants
@@ -779,6 +789,7 @@ export default function AdvancedDashboard({
 
     rows.forEach((r) => {
       if (getRowStatus(r) === 'dropped') return; // dropped graphics aren't run by any plant
+      if (techRiskFilter !== "all" && riskBucketOf(r) !== techRiskFilter) return;
       const tc = techniqueGroupForRow(r);
       if (!tc) return;
       // Risk Factor (col17) — same buckets as the chart above.
@@ -906,7 +917,8 @@ export default function AdvancedDashboard({
       });
     });
     return { cards, byPlant };
-  }, [rows]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, techRiskFilter]);
   const [techniquePlant, setTechniquePlant] = useState<string | null>(null);
   // Technique group expanded in the plant popup to list its Graphic / Combo / Style lines.
   // Clicking a plant inside a group's card opens the popup with that group already expanded.
@@ -1647,7 +1659,27 @@ export default function AdvancedDashboard({
           <h3 className="text-white font-bold text-sm tracking-widest uppercase">
             Techniques In Season — Risk &amp; Plant Breakdown
           </h3>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1 mr-2" role="group" aria-label="Filter by risk">
+              {([
+                { key: "all", label: "All", cls: "border-zinc-500 text-white bg-zinc-700/40" },
+                { key: "high", label: "High Risk", cls: "border-red-500 text-red-300 bg-red-500/15" },
+                { key: "low", label: "Low Risk", cls: "border-emerald-500 text-emerald-300 bg-emerald-500/15" },
+              ] as const).map((o) => (
+                <button
+                  key={o.key}
+                  type="button"
+                  onClick={() => setTechRiskFilter(o.key)}
+                  className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer ${
+                    techRiskFilter === o.key
+                      ? o.cls
+                      : "border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-500"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
             <LegendDot color="#ef4444" label="High Risk" />
             <LegendDot color="#22c55e" label="Low Risk" />
             <LegendDot color="#3f4a58" label="Unrated" />
@@ -1657,6 +1689,11 @@ export default function AdvancedDashboard({
           Top techniques for the current season by volume — the count next to each name is total
           items. Bright color = risk factor; the faint tail is items with no risk factor set yet.
           Hover a bar to see which plants are running that technique.
+          {techRiskFilter !== "all" && (
+            <span className={`ml-1 font-bold ${techRiskFilter === "high" ? "text-red-400" : "text-emerald-400"}`}>
+              Filtered to {techRiskFilter === "high" ? "High Risk" : "Low Risk"} items only — the plant cards below follow this filter.
+            </span>
+          )}
         </p>
         {techniqueChartData.length === 0 ? (
           <div className="text-zinc-600 text-xs italic py-8 text-center">
