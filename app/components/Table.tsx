@@ -1022,6 +1022,62 @@ export default function Table({
     return keys;
   }, [columns]);
 
+  // Export exactly what the table is showing: every row that passes the current filters/search
+  // (all pages, not just this page), in the on-screen sort order and column order.
+  const [exportingTable, setExportingTable] = useState(false);
+  const exportTableExcel = async () => {
+    if (filteredRows.length === 0) return;
+    setExportingTable(true);
+    try {
+      const [{ default: ExcelJS }, { saveAs }] = await Promise.all([import("exceljs"), import("file-saver")]);
+      const keys = ["col1", "col5", "col7", ...sortedColKeys.filter((k) => k !== "col1" && k !== "col5" && k !== "col7")]
+        .filter((k) => columns[k]);
+      const cellText = (row: EmbellishmentRow, key: string): string => {
+        if (key === "col1") return getDisplayStatus(row);
+        if (key === "col48") return hasBuy(row) ? "Has Buy" : "No Buy";
+        if (key === "col41" || key === "col42") {
+          const mark = normApprovalMark((row as Record<string, unknown>)[key]);
+          return mark === "Y" ? "Approved" : mark === "N" ? "Not Approved" : "Pending";
+        }
+        const v = (row as Record<string, unknown>)[key];
+        return v === null || v === undefined ? "" : String(v).trim();
+      };
+
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Table");
+      ws.columns = keys.map((k) => ({
+        header: String(columns[k] || k).toUpperCase(),
+        key: k,
+        width: k === "col22" || k === "col24" ? 50 : 18,
+      }));
+      const head = ws.getRow(1);
+      head.eachCell((c) => {
+        c.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E79" } };
+        c.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+      });
+      head.height = 32;
+      filteredRows.forEach((row) => {
+        const rec: Record<string, string> = {};
+        keys.forEach((k) => { rec[k] = cellText(row, k); });
+        const added = ws.addRow(rec);
+        added.alignment = { vertical: "top", wrapText: true };
+      });
+      ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: keys.length } };
+      ws.views = [{ state: "frozen", ySplit: 1, xSplit: 3 }];
+
+      const d = new Date();
+      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const buf = await wb.xlsx.writeBuffer();
+      saveAs(
+        new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+        `Embellishment_Table_${filteredRows.length}rows_${stamp}.xlsx`,
+      );
+    } finally {
+      setExportingTable(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4 text-slate-100">
       <datalist id="trigger-catalog-datalist">
@@ -1155,6 +1211,15 @@ export default function Table({
             </select>
             <span>rows</span>
           </div>
+
+          <button
+            onClick={exportTableExcel}
+            disabled={exportingTable || filteredRows.length === 0}
+            className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-xl transition-all shadow-md active:scale-[0.98]"
+            title="Download the rows the table is showing now (current filters and search, all pages, current sort) as Excel"
+          >
+            {exportingTable ? "Exporting…" : `Export Table (${filteredRows.length})`}
+          </button>
 
           {currentRole === "Planner" && (
             <DailyEventsExport rows={allRows || rows} onUpdateRow={onUpdateRow} />

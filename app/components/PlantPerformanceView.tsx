@@ -53,6 +53,9 @@ interface GraphicResult {
   // The graphic's own AOQ-approval verdict (independent of month/PPS outcome — see
   // resolveGraphicAoqVerdict). null when the graphic has no AOQ deadline to score against.
   aoqVerdict: AoqVerdict | null;
+  // true when "failed" only because the PPS day passed un-updated and the
+  // "count overdue as failed" toggle is on (the plant never marked it red)
+  fromOverdue: boolean;
 }
 
 interface Bucket {
@@ -280,6 +283,7 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
           b.graphics.push({
             key, graphic: a.graphic, season: a.season, category: a.category, outcome,
             dates: Array.from(a.dates).sort(), reason: a.reason, aoqVerdict,
+            fromOverdue: !a.fail && !a.pass && a.overdue && overdueAsFailed,
           });
         });
         monthBuckets.set(monthKey, b);
@@ -325,7 +329,7 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
   const inWindow = (dates: string[]) => dates.some((d) => d >= effectiveWindow.from && d <= effectiveWindow.to);
 
   // sum a plant's buckets across the active period window
-  const plantRows = useMemo(() => {
+  const plantRowsAll = useMemo(() => {
     const out: {
       plant: string; total: Bucket; perMonth: (Bucket | null)[];
     }[] = [];
@@ -355,6 +359,7 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, year, passPts, failPts, effectiveWindow, isAllPeriod]);
 
+  const plantRows = plantRowsAll;
   const grand = useMemo(() => {
     const g = emptyBucket();
     plantRows.forEach((p) => {
@@ -401,10 +406,21 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
 
   // Excel of what's on screen: Summary (plant totals for the filters, incl. month columns), Monthly
   // (plant × month for the whole year — pivot-friendly) and Graphics (every graphic behind the totals).
-  const exportExcel = async () => {
-    if (plantRows.length === 0) return;
-    setExporting(true);
-    try {
+  // onlyPlant = export just that plant (drill-down button); omitted = every plant on screen.
+  const periodSuffix = `${year}${periodMode === "quarter" ? `-Q${quarter}` : periodMode === "range" ? "-range" : month !== "all" ? `-${month}` : ""}`;
+  const plantFileName = (plant: string) => `Plant_Performance_${plant.replace(/[^A-Za-z0-9]+/g, "_")}_${periodSuffix}.xlsx`;
+
+  // Builds the performance workbook for one plant (or every plant on screen) and returns its bytes.
+  const buildWorkbook = async (onlyPlant?: string): Promise<ArrayBuffer | null> => {
+    const plantRows = onlyPlant ? plantRowsAll.filter((p) => p.plant === onlyPlant) : plantRowsAll;
+    if (plantRows.length === 0) return null;
+    const grand = emptyBucket();
+    plantRows.forEach((p) => {
+      grand.onTime += p.total.onTime; grand.failed += p.total.failed;
+      grand.overdue += p.total.overdue; grand.upcoming += p.total.upcoming;
+      grand.approvedOnTime += p.total.approvedOnTime;
+    });
+    {
       const wb = new ExcelJS.Workbook();
       const bold = (row: ExcelJS.Row) => row.eachCell((c) => {
         c.font = { bold: true };
@@ -412,6 +428,125 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
       });
       const label = (o: Outcome) => (o === "onTime" ? "On time" : o === "failed" ? "Failed" : o === "overdue" ? "Overdue - not updated" : "Upcoming");
       const filters = `Period: ${periodLabel} · Season: ${season} · Category: ${category} · Pass +${passPts} / Fail -${failPts}${overdueAsFailed ? " · overdue counted as failed" : ""} · Score = 60% on-time submission + 40% approved before AOQ (grace ${graceDays}d)`;
+
+      const aoqLabel = (v: AoqVerdict | null) =>
+        v === "onTime" ? "Approved before AOQ" : v === "late" ? "Approved late" : v === "rejected" ? "Rejected" : v === "pending" ? "Awaiting verdict" : v === "unscored" ? "No AOQ date" : "";
+      const monthOf = (g: GraphicResult) => (g.dates[0] ? `${MONTHS[Number(g.dates[0].slice(5, 7)) - 1]} ${g.dates[0].slice(0, 4)}` : "");
+      const byDate = (a: GraphicResult, b: GraphicResult) =>
+        (a.dates[0] || "").localeCompare(b.dates[0] || "") || a.graphic.localeCompare(b.graphic);
+      const headerFill = (row: ExcelJS.Row, argb: string) => row.eachCell((c) => {
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
+      });
+
+      // ── Score Breakdown: every step of the score as live Excel formulas ──
+      const sb = wb.addWorksheet("Score Breakdown");
+      sb.columns = [
+        { header: "PLANT", key: "plant", width: 22 },
+        { header: "GRAPHICS ALLOCATED (col B)", key: "n", width: 14 },
+        { header: "ON TIME - PPS GREEN (col C)", key: "on", width: 14 },
+        { header: "FAILED - PPS RED (col D)", key: "fail", width: 13 },
+        { header: "OVERDUE NOT UPDATED", key: "od", width: 13 },
+        { header: "UPCOMING", key: "up", width: 11 },
+        { header: "APPROVED BEFORE AOQ (col G)", key: "aoq", width: 14 },
+        { header: "ON-TIME RATE = C / B", key: "r1", width: 13 },
+        { header: "ON-TIME PART = RATE x 60", key: "p1", width: 14 },
+        { header: "AOQ RATE = G / B", key: "r2", width: 13 },
+        { header: "AOQ PART = RATE x 40", key: "p2", width: 13 },
+        { header: "SCORE % = ON-TIME PART + AOQ PART", key: "score", width: 17 },
+        { header: `NET POINTS = C x ${passPts} - D x ${failPts}`, key: "pts", width: 16 },
+      ];
+      bold(sb.getRow(1));
+      headerFill(sb.getRow(1), "FFDDEBF7");
+      sb.getRow(1).height = 45;
+      const addBreakdownRow = (name: string, b: Bucket, isTotal = false) => {
+        const n = allocated(b);
+        const r = sb.addRow({ plant: name, n, on: b.onTime, fail: b.failed, od: b.overdue, up: b.upcoming, aoq: b.approvedOnTime });
+        const i = r.number;
+        const r1 = n ? b.onTime / n : 0;
+        const r2 = n ? b.approvedOnTime / n : 0;
+        r.getCell("r1").value = { formula: `IF(B${i}=0,0,C${i}/B${i})`, result: r1 };
+        r.getCell("p1").value = { formula: `H${i}*60`, result: r1 * 60 };
+        r.getCell("r2").value = { formula: `IF(B${i}=0,0,G${i}/B${i})`, result: r2 };
+        r.getCell("p2").value = { formula: `J${i}*40`, result: r2 * 40 };
+        r.getCell("score").value = { formula: `ROUND(I${i}+K${i},0)`, result: scorePct(b) ?? 0 };
+        r.getCell("pts").value = { formula: `C${i}*${passPts}-D${i}*${failPts}`, result: points(b) };
+        r.getCell("r1").numFmt = "0.0%";
+        r.getCell("r2").numFmt = "0.0%";
+        r.getCell("p1").numFmt = "0.0";
+        r.getCell("p2").numFmt = "0.0";
+        r.getCell("score").font = { bold: true, color: { argb: "FF1F4E79" } };
+        if (isTotal) r.font = { bold: true };
+      };
+      plantRows.forEach((p) => addBreakdownRow(p.plant, p.total));
+      if (plantRows.length > 1) addBreakdownRow("TOTAL", grand, true);
+      sb.addRow([]);
+      [
+        "HOW THE SCORE IS CALCULATED",
+        "Col B  Graphics allocated = every graphic with a PPS at this plant in the period (on time + failed + overdue + upcoming). A graphic counts once per plant per month.",
+        "Col C  On time = the plant marked the PPS green (pass).",
+        `Col D  Failed = the plant marked the PPS red (fail)${overdueAsFailed ? ', plus PPS days that passed without being updated ("count overdue as failed" was ON)' : ""}.`,
+        `Col G  Approved before AOQ = NY approved the graphic on or before its AOQ date + ${graceDays} grace day(s).`,
+        "Score % = (C / B) x 60  +  (G / B) x 40, rounded. Pending (overdue/upcoming) graphics stay in col B but earn 0 on both halves.",
+        `Net points = C x ${passPts} (pass) - D x ${failPts} (fail). Pending graphics earn no points.`,
+        "",
+        filters,
+      ].forEach((t, k) => {
+        const r = sb.addRow([t]);
+        if (k === 0) r.font = { bold: true, size: 12 };
+      });
+      sb.views = [{ state: "frozen", ySplit: 1, xSplit: 1 }];
+
+      // ── Failed Graphics: every graphic that lost points, with the graphic number ──
+      const fs = wb.addWorksheet("Failed Graphics");
+      fs.columns = [
+        { header: "PLANT", key: "plant", width: 22 },
+        { header: "GRAPHIC", key: "graphic", width: 20 },
+        { header: "SEASON", key: "season", width: 10 },
+        { header: "CATEGORY", key: "category", width: 18 },
+        { header: "MONTH", key: "month", width: 12 },
+        { header: "PPS DAY(S)", key: "days", width: 22 },
+        { header: "POINTS LOST", key: "pts", width: 12 },
+        { header: "WHY COUNTED AS FAILED", key: "why", width: 34 },
+        { header: "FAIL REASON", key: "reason", width: 38 },
+        { header: "AOQ VERDICT", key: "aoq", width: 20 },
+      ];
+      bold(fs.getRow(1));
+      headerFill(fs.getRow(1), "FFFFC7CE");
+      let failedCount = 0;
+      plantRows.forEach((p) => p.total.graphics.filter((g) => g.outcome === "failed").sort(byDate).forEach((g) => {
+        failedCount++;
+        fs.addRow({
+          plant: p.plant, graphic: g.graphic, season: g.season, category: g.category, month: monthOf(g),
+          days: g.dates.map(fmtDay).join(", "), pts: -failPts,
+          why: g.fromOverdue ? "PPS day passed, never updated (overdue)" : "PPS marked red by the plant",
+          reason: g.reason || (g.fromOverdue ? "" : "No reason entered"), aoq: aoqLabel(g.aoqVerdict),
+        });
+      }));
+      if (failedCount === 0) fs.addRow({ plant: "No failed graphics for these filters" });
+      fs.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 10 } };
+      fs.views = [{ state: "frozen", ySplit: 1 }];
+
+      // ── Overdue (not updated) graphics, so they can be chased ──
+      const overdueList = plantRows.flatMap((p) => p.total.graphics.filter((g) => g.outcome === "overdue").map((g) => ({ p, g })));
+      if (overdueList.length > 0) {
+        const os = wb.addWorksheet("Overdue - Not Updated");
+        os.columns = [
+          { header: "PLANT", key: "plant", width: 22 },
+          { header: "GRAPHIC", key: "graphic", width: 20 },
+          { header: "SEASON", key: "season", width: 10 },
+          { header: "CATEGORY", key: "category", width: 18 },
+          { header: "PPS DAY(S)", key: "days", width: 22 },
+          { header: "NOTE", key: "note", width: 50 },
+        ];
+        bold(os.getRow(1));
+        headerFill(os.getRow(1), "FFFFEB9C");
+        overdueList.sort((a, b) => a.p.plant.localeCompare(b.p.plant) || byDate(a.g, b.g)).forEach(({ p, g }) => os.addRow({
+          plant: p.plant, graphic: g.graphic, season: g.season, category: g.category, days: g.dates.map(fmtDay).join(", "),
+          note: "PPS day passed but not marked green/red - counts in Graphics Allocated but earns 0",
+        }));
+        os.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 6 } };
+        os.views = [{ state: "frozen", ySplit: 1 }];
+      }
 
       const sum = wb.addWorksheet("Summary");
       sum.columns = [
@@ -485,8 +620,6 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
         { header: "FAIL REASON", key: "reason", width: 34 },
       ];
       bold(gs.getRow(1));
-      const aoqLabel = (v: AoqVerdict | null) =>
-        v === "onTime" ? "Approved before AOQ" : v === "late" ? "Approved late" : v === "rejected" ? "Rejected" : v === "pending" ? "Awaiting verdict" : v === "unscored" ? "No AOQ date" : "";
       plantRows.forEach((p) => [...p.total.graphics]
         .sort((a, b) => (a.dates[0] || "").localeCompare(b.dates[0] || "") || a.graphic.localeCompare(b.graphic))
         .forEach((g) => {
@@ -503,11 +636,38 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
       gs.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 10 } };
       gs.views = [{ state: "frozen", ySplit: 1 }];
 
-      const buf = await wb.xlsx.writeBuffer();
-      saveAs(
-        new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-        `Plant_Performance_${year}${periodMode === "quarter" ? `-Q${quarter}` : periodMode === "range" ? "-range" : month !== "all" ? `-${month}` : ""}.xlsx`,
-      );
+      return (await wb.xlsx.writeBuffer()) as ArrayBuffer;
+    }
+  };
+
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+  // One workbook: a single plant (drill-down button) or every plant together.
+  const exportExcel = async (onlyPlant?: string) => {
+    setExporting(true);
+    try {
+      const buf = await buildWorkbook(onlyPlant);
+      if (!buf) return;
+      saveAs(new Blob([buf], { type: XLSX_MIME }), onlyPlant ? plantFileName(onlyPlant) : `Plant_Performance_${periodSuffix}.xlsx`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // Plant-wise: a separate Excel per plant (own score breakdown, failed graphics, graphics), all
+  // bundled in one ZIP so the browser doesn't block a burst of downloads.
+  const exportByPlant = async () => {
+    if (plantRowsAll.length === 0) return;
+    setExporting(true);
+    try {
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      for (const p of plantRowsAll) {
+        const buf = await buildWorkbook(p.plant);
+        if (buf) zip.file(plantFileName(p.plant), buf);
+      }
+      const blob = await zip.generateAsync({ type: "blob" });
+      saveAs(blob, `Plant_Performance_by_plant_${periodSuffix}.zip`);
     } finally {
       setExporting(false);
     }
@@ -604,12 +764,20 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
       {/* exports */}
       <div className="px-6 py-3 border-b border-zinc-800/60 flex items-center justify-between gap-4 flex-wrap">
         <button
-          onClick={exportExcel}
+          onClick={() => exportExcel()}
           disabled={exporting || plantRows.length === 0}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-xl transition-all shadow-md active:scale-[0.98]"
           title="Download what you see here as Excel — Summary, Monthly and Graphics sheets, using the current year / month / season / category filters"
         >
           {exporting ? "Exporting…" : "Export performance (Excel)"}
+        </button>
+        <button
+          onClick={exportByPlant}
+          disabled={exporting || plantRows.length === 0}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 disabled:opacity-50 rounded-xl transition-all shadow-md active:scale-[0.98]"
+          title="Download a ZIP with a separate Excel file for each plant (its own score breakdown, failed graphics and graphics), using the current filters"
+        >
+          {exporting ? "Exporting…" : `Export by plant (${plantRows.length} files, ZIP)`}
         </button>
         <PlantPlanRangeExport rows={rows} />
       </div>
@@ -750,7 +918,17 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
                   {detail.total.graphics.length} graphics · {detail.total.onTime} on time · {detail.total.failed} failed · {pending(detail.total)} pending · {detail.total.approvedOnTime} approved before AOQ
                 </span>
               </div>
-              <button onClick={() => setSelectedPlant(null)} className="px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:text-white bg-zinc-900 border border-zinc-700 rounded-lg">Close</button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => exportExcel(detail.plant)}
+                  disabled={exporting}
+                  className="px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg"
+                  title="Excel for this plant only: score breakdown (how the % is worked out), failed graphics with graphic numbers, and every graphic behind the score"
+                >
+                  {exporting ? "Exporting…" : `Export ${detail.plant} (Excel)`}
+                </button>
+                <button onClick={() => setSelectedPlant(null)} className="px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:text-white bg-zinc-900 border border-zinc-700 rounded-lg">Close</button>
+              </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
