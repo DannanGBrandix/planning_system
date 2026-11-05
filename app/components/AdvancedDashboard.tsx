@@ -75,7 +75,7 @@ export default function AdvancedDashboard({
   // clicking a card opens the popup listing exactly which active combos are still missing that
   // approval (previously the card only showed a bare count with no way to see which items it
   // referred to).
-  const [approvalGapModal, setApprovalGapModal] = useState<"color" | "colorBuy" | "colorNoBuy" | "placementNeeded" | "layoutTech" | "cp" | "commentsPending" | null>(null);
+  const [approvalGapModal, setApprovalGapModal] = useState<"color" | "colorBuy" | "colorNoBuy" | "techBuyApproved" | "techBuyMissing" | "placementNeeded" | "layoutTech" | "cp" | "commentsPending" | null>(null);
   const [editingTriggerKey, setEditingTriggerKey] = useState<string | null>(
     null,
   );
@@ -597,6 +597,10 @@ export default function AdvancedDashboard({
     // are ready for you to chase placement approval on".
     const placementNeeded: EmbellishmentRow[] = [];
     const layoutTech: EmbellishmentRow[] = [];
+    // Buy combos (any row hasBuy — same rule as the Color card's Has Buy box) split by whether
+    // they've come through Tech & Layout approval yet. "Missing" = has buy, not yet approved.
+    const techBuyApproved: EmbellishmentRow[] = [];
+    const techBuyMissing: EmbellishmentRow[] = [];
     // The combos behind the "C+P" and "Comments Pending" MiniStats — the exact same
     // getGroupStatus buckets the counters use, so each drill-down list and its number
     // always agree.
@@ -620,6 +624,15 @@ export default function AdvancedDashboard({
       const statuses = cRows.map(getRowStatus);
       const techLayoutApproved = statuses.some((s) => s === "approved");
       if (!techLayoutApproved) layoutTech.push(cRows[0]);
+      if (cRows.some(hasBuy)) {
+        if (techLayoutApproved) {
+          techBuyApproved.push(cRows.find((r) => getRowStatus(r) === "approved") ?? cRows[0]);
+        } else {
+          techBuyMissing.push(
+            cRows.find((r) => getRowStatus(r) !== "dropped" && hasBuy(r)) ?? cRows.find(hasBuy) ?? cRows[0],
+          );
+        }
+      }
       if (techLayoutApproved && !cRows.some(hasPlacementApproval)) {
         placementNeeded.push(
           cRows.find((r) => getRowStatus(r) === "approved") ?? cRows[0],
@@ -649,10 +662,12 @@ export default function AdvancedDashboard({
     colorNoBuy.sort(byGraphicThenCombo);
     placementNeeded.sort(byGraphicThenCombo);
     layoutTech.sort(byGraphicThenCombo);
+    techBuyApproved.sort(byGraphicThenCombo);
+    techBuyMissing.sort(byGraphicThenCombo);
     cp.sort(byGraphicThenCombo);
     commentsPending.sort(byGraphicThenCombo);
 
-    return { color, colorBuy, colorNoBuy, placementNeeded, layoutTech, cp, commentsPending };
+    return { color, colorBuy, colorNoBuy, techBuyApproved, techBuyMissing, placementNeeded, layoutTech, cp, commentsPending };
   }, [rows]);
 
   // Donut data — the 6 exclusive combo status buckets, so the ring is a true
@@ -1609,6 +1624,29 @@ export default function AdvancedDashboard({
               accent="#3b82f6"
               icon="📐"
               onClick={() => setApprovalGapModal("layoutTech")}
+              breakdown={(() => {
+                const buyTotal = approvalGapLists.techBuyApproved.length + approvalGapLists.techBuyMissing.length;
+                return [
+                  {
+                    label: "Buy · Approved",
+                    value: approvalGapLists.techBuyApproved.length,
+                    total: buyTotal,
+                    totalLabel: "with buy",
+                    color: "#60a5fa",
+                    tooltip: `Click to see the ${approvalGapLists.techBuyApproved.length} buy combos that came through Tech & Layout approval`,
+                    onClick: () => setApprovalGapModal("techBuyApproved"),
+                  },
+                  {
+                    label: "Buy · Missing",
+                    value: approvalGapLists.techBuyMissing.length,
+                    total: buyTotal,
+                    totalLabel: "with buy",
+                    color: "#f87171",
+                    tooltip: `Click to see the ${approvalGapLists.techBuyMissing.length} combos that have a buy but are NOT Tech & Layout approved yet`,
+                    onClick: () => setApprovalGapModal("techBuyMissing"),
+                  },
+                ];
+              })()}
             />
             <ApprovalSplitCard
               title="Color Approval"
@@ -1987,6 +2025,10 @@ export default function AdvancedDashboard({
                 ? "Color Approved — Has Buy"
                 : approvalGapModal === "colorNoBuy"
                   ? "Color Approved — No Buy"
+                  : approvalGapModal === "techBuyApproved"
+                    ? "Has Buy — Tech & Layout Approved"
+                    : approvalGapModal === "techBuyMissing"
+                      ? "Has Buy — Missing Tech & Layout Approval"
                   : approvalGapModal === "placementNeeded"
                 ? "Needs Placement Approval"
                 : approvalGapModal === "cp"
@@ -2008,7 +2050,11 @@ export default function AdvancedDashboard({
                       ? `${approvalGapLists.colorBuy.length} colour-approved combo${approvalGapLists.colorBuy.length === 1 ? "" : "s"} that came for the buy`
                       : approvalGapModal === "colorNoBuy"
                         ? `${approvalGapLists.colorNoBuy.length} colour-approved combo${approvalGapLists.colorNoBuy.length === 1 ? "" : "s"} with no buy`
-                        : undefined
+                        : approvalGapModal === "techBuyApproved"
+                          ? `${approvalGapLists.techBuyApproved.length} buy combo${approvalGapLists.techBuyApproved.length === 1 ? "" : "s"} that came through Tech & Layout approval`
+                          : approvalGapModal === "techBuyMissing"
+                            ? `${approvalGapLists.techBuyMissing.length} combo${approvalGapLists.techBuyMissing.length === 1 ? "" : "s"} with a buy but NOT Tech & Layout approved yet`
+                            : undefined
           }
           rows={
             approvalGapModal === "color"
@@ -2017,6 +2063,10 @@ export default function AdvancedDashboard({
                 ? approvalGapLists.colorBuy
                 : approvalGapModal === "colorNoBuy"
                   ? approvalGapLists.colorNoBuy
+                  : approvalGapModal === "techBuyApproved"
+                    ? approvalGapLists.techBuyApproved
+                    : approvalGapModal === "techBuyMissing"
+                      ? approvalGapLists.techBuyMissing
                   : approvalGapModal === "placementNeeded"
                 ? approvalGapLists.placementNeeded
                 : approvalGapModal === "cp"
@@ -2228,7 +2278,16 @@ function ApprovalSplitCard({
   tooltip?: string;
   totalLabel?: string;
   // Optional sub-counts shown under the bar (Color Approval: Has Buy / No Buy).
-  breakdown?: { label: string; value: number; total: number; color: string; onClick?: () => void }[];
+  breakdown?: {
+    label: string;
+    value: number;
+    total: number;
+    color: string;
+    onClick?: () => void;
+    // Defaults describe the Color card ("/ N approved", colour-approved tooltip).
+    totalLabel?: string;
+    tooltip?: string;
+  }[];
 }) {
   const missing = Math.max(0, total - value);
   const footerText = footer ?? `${missing} missing — click to view →`;
@@ -2306,9 +2365,10 @@ function ApprovalSplitCard({
                 b.onClick ? "cursor-pointer hover:border-zinc-500" : ""
               }`}
               title={
-                b.onClick
+                b.tooltip ??
+                (b.onClick
                   ? `Click to see the ${b.value} colour-approved combo${b.value === 1 ? "" : "s"} with ${b.label}`
-                  : `${b.label}: ${b.value} of ${b.total} approved combo${b.total === 1 ? "" : "s"} colour-approved`
+                  : `${b.label}: ${b.value} of ${b.total} approved combo${b.total === 1 ? "" : "s"} colour-approved`)
               }
             >
               <div className="text-[9px] font-bold uppercase tracking-wide" style={{ color: b.color }}>
@@ -2316,7 +2376,7 @@ function ApprovalSplitCard({
               </div>
               <div className="font-mono text-sm font-extrabold text-white">
                 {b.value}
-                <span className="text-[9px] font-normal text-zinc-500"> / {b.total} approved</span>
+                <span className="text-[9px] font-normal text-zinc-500"> / {b.total} {b.totalLabel ?? "approved"}</span>
               </div>
             </div>
           ))}
