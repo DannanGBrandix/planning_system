@@ -114,8 +114,10 @@ export function cleanSeason(season: string): string {
   if (s === "SUMMER 2027") return "SU27";
   if (s === "HOLIDAY 2026") return "HO26";
   if (s === "HOLIDAY 2027") return "HO27";
-  if (s === "WINTER 2026") return "WI26";
-  if (s === "WINTER 2027") return "WI27";
+  // Winter is "WL" (the CK charts' own code, WL27) — older imports stored "WI27" for the same
+  // season, which split it in two in the season filter. Every winter spelling collapses to WL.
+  if (s === "WINTER 2026") return "WL26";
+  if (s === "WINTER 2027") return "WL27";
 
   // Extract just the leading season token — "<letters><year>" at the start — and drop anything
   // after it. Tracking charts often cram the whole season string into one column, e.g.
@@ -131,13 +133,13 @@ export function cleanSeason(season: string): string {
      }
 
      // Normalize common prefixes to the app's 2-letter form (SP27, SU27, FA26, …). Single-letter
-     // codes from tracking charts are the same season: F26 == FA26, H27 == HO27, W27 == WI27.
+     // codes from tracking charts are the same season: F26 == FA26, H27 == HO27, W27 == WI27 == WL27.
      // "S" alone is left as-is — it's ambiguous between Spring and Summer.
      if (text === "HOLIDAY" || text === "HOL" || text === "H") text = "HO";
      else if (text === "FALL" || text === "F") text = "FA";
      else if (text === "SPRING" || text === "SPR") text = "SP";
      else if (text === "SUMMER" || text === "SUM") text = "SU";
-     else if (text === "WINTER" || text === "WIN" || text === "W") text = "WI";
+     else if (text === "WINTER" || text === "WIN" || text === "W" || text === "WI") text = "WL";
 
      return `${text}${year}`;
   }
@@ -147,9 +149,9 @@ export function cleanSeason(season: string): string {
   // its 100 rows (the rest just say "SU27"). Left as-is that whole string became col4, failed the
   // import's season guard against the existing "SU27" rows, and every one showed up as a
   // duplicate "New Record". Look for a known season token anywhere in the value instead.
-  const inner = s.match(/(?:^|[^A-Z0-9])(SU|SP|FA|HO|WI|SUMMER|SPRING|FALL|HOLIDAY|WINTER)\s*'?\s*(?:20)?(\d{2})(?![0-9])/);
+  const inner = s.match(/(?:^|[^A-Z0-9])(SU|SP|FA|HO|WI|WL|SUMMER|SPRING|FALL|HOLIDAY|WINTER)\s*'?\s*(?:20)?(\d{2})(?![0-9])/);
   if (inner) {
-    const map: Record<string, string> = { SUMMER: "SU", SPRING: "SP", FALL: "FA", HOLIDAY: "HO", WINTER: "WI" };
+    const map: Record<string, string> = { SUMMER: "SU", SPRING: "SP", FALL: "FA", HOLIDAY: "HO", WINTER: "WL", WI: "WL" };
     return `${map[inner[1]] || inner[1]}${inner[2]}`;
   }
 
@@ -719,6 +721,20 @@ export const DEFAULT_COLUMNS: ColumnMapping = {
   // (e.g. body fabric already went, now sending the applique fabric). Shown on the Fabric
   // Dispatch page and in its Excel export. Routes through `schedule` JSONB like col34+.
   col50: "Fabric Dispatch Comment",
+  // HO27 Dev Pack Tracker import (lib/devPackImport.ts, 2026-10-14). Kept out of col22/col34
+  // so plant feasibility notes ("drop", "approval"...) can't flip getRowStatus. JSONB like col34+.
+  col52: "Dev Pack Concerns / Limitation",
+  col53: "Dev Pack Remark",
+  col54: "Dev Pack Cost",
+  col55: "Dev Pack Ready Date",
+  col56: "Dev Pack Pass Off Date",
+  col57: "Dev Pack Reviewed w/ Graphics Team",
+  col58: "Dev Pack Size",
+  col59: "Dev Pack Per Day Output",
+  col60: "Dev Pack RM Lead Time",
+  col61: "Dev Pack Wash Recommendation",
+  col62: "Dev Pack Vendor & Supplier",
+  col63: "Dev Pack Synced",
 };
 
 // Seed Mock Data in server
@@ -1244,7 +1260,9 @@ export async function applyCkDedupe(): Promise<{ deleted: number; updated: numbe
 // re-sync hasn't corrected col1 yet", so it maps to dropped, not pending.
 const getCkRowStatus = (c1: string): 'approved' | 'dropped' | 'hold' | 'pending' | 'c+p' => {
   if (c1 === 'A' || c1 === 'APPROVED') return 'approved';
-  if (c1 === 'CP' || c1 === 'C+P') return 'c+p';
+  // "Comments Pending" spelled out (set by hand / Event Status Panel) means the same as "CP" —
+  // without this it fell through to 'pending' and counted as Submission Pending.
+  if (c1 === 'CP' || c1 === 'C+P' || c1 === 'C + P' || /^COMMENTS?\s*PENDING$/.test(c1)) return 'c+p';
   if (c1 === 'H' || c1 === 'HOLD') return 'hold';
   if (c1 === 'D' || c1 === 'DROPPED' || c1 === 'REACTIVATED') return 'dropped';
   // SP ("Pending") and anything unrecognized/blank both fall here — CK's S/off Status only ever
@@ -1342,6 +1360,17 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
 
   const isExplicitCP = c20 === 'C+P' || c1 === 'C+P';
 
+  // 0. A Status (col1) the planner set by hand to Approved / Dropped outranks a stale
+  // "Resubmit Needed" left in col20 — otherwise changing Status Resubmit → Approved in the
+  // edit modal saves but the badge never moves (col20 still says RESUB).
+  const isStatusDropped = c1 === 'D' || c1.includes('DROPPED') || c1.includes('DROP') || c1.includes('REALLOCATED');
+  if (isStatusDropped) {
+    return 'dropped';
+  }
+  if (isStatusApproved) {
+    return 'approved';
+  }
+
   // 1. Check explicitly provided status in col20 or col1 first (highest priority)
   if (isExplicitResubmit) {
     return 'resubmit';
@@ -1395,11 +1424,20 @@ export const getRowStatus = (r: EmbellishmentRow): 'approved' | 'dropped' | 'hol
 //   2. a bare "COLOR APPROVED" / "COLORS APPROVED" line — frequently appended on its own row
 //      under a comment that only signed off tech/layout (planner confirmed these count).
 //      APPROVED must sit immediately after COLOR(S) so "COLOR NOT APPROVED" can't match.
+//   3. a final NA sign-off on a dated strike-off — "NA 10/16: S/off dtd 9/28, Approved." /
+//      "S/O dated 8/14 - Approved" (VS AE SP27 chart). APPROVED must END the phrase (then
+//      "." "," ";" a line break or the end), so "S/O DATED 9/19/26 APPROVED LAYOUT/ TECH/ EX",
+//      "… Approved for layout" and "… Approved via email" (tech/layout only) don't count.
 const COLOR_APPROVED_RE = /(?:APPROVED|APP)\s+(?:FOR\s+)?[A-Z0-9\/,&\s]*\bCOLOU?RS?\b|\bCOLOU?RS?\s+APPROVED\b/;
+const SOFF_DATED_APPROVED_RE = /\bS\s*\/\s*O(?:FF)?\s+(?:DTD|DATED)\.?\s*\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]\d{2,4})?\s*[,:;.\-]?\s*APPROVED[ \t]*(?:[.,;\n\r]|$)/m;
 export function hasColorApproval(r: EmbellishmentRow): boolean {
+  // A Color Approval (col41) the planner ticked "✓ Approved" by hand counts even when no
+  // strike-off comment says so. Only "Y" is honoured — "N" is what "Sync Approval Cols" writes
+  // for rows still waiting, so treating it as a veto would hide a later comment sign-off.
+  if (String(r.col41 || '').trim().toUpperCase() === 'Y') return true;
   const c22 = String(r.col22 || '').toUpperCase();
   const c34 = String(r.col34 || '').toUpperCase();
-  return COLOR_APPROVED_RE.test(c22) || COLOR_APPROVED_RE.test(c34);
+  return [c22, c34].some((c) => COLOR_APPROVED_RE.test(c) || SOFF_DATED_APPROVED_RE.test(c));
 }
 
 // Detects placement sign-off from col42 ("Placement Approval"). This column now carries the
@@ -1427,16 +1465,63 @@ export function hasBuy(r: EmbellishmentRow): boolean {
   return hasColorApproval(r);
 }
 
+// Strictly on the buy list — col48 explicitly "Y" (the planner's toggle or a buy-list import),
+// no colour-approval fallback. Drives the Dashboard's "Has Buy" filter button.
+export function isOnBuyList(r: EmbellishmentRow): boolean {
+  return String(r.col48 || '').trim().toUpperCase() === 'Y';
+}
+
 // Graphic Type (col19) values the business does NOT want inflating Advanced Analytics'
 // counts, charts, or tables — "branding" (logo/care-label brandings, not real graphic
 // developments) and "trial" (added 2026-09-15, same reasoning: not a production graphic).
 // Substring match, case-insensitive, so "TRIAL", "Trial Only", etc. all match. Every other
 // view (Dashboard, Table, Action Center, ...) keeps these rows — only Advanced Analytics
 // (and the DashboardStats tile that deliberately mirrors it, see below) drops them.
-const ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES = ["branding", "trial"];
+// "dev" (added 2026-10-06): DEV development graphics ("H27_DEV_011", "GPH27_DEV") — also caught
+// by the graphic number itself (DEV_GRAPHIC_RE) so a new DEV row with a blank Graphic Type is
+// excluded without anyone having to tag it first.
+const ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES = ["branding", "trial", "dev"];
+// "VN" (added 2026-10-22) — whole-word only: two letters as a substring would catch unrelated types.
+const ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPE_RE = /(^|[^A-Z])VN([^A-Z]|$)/i;
+const DEV_GRAPHIC_RE = /(^|[^A-Z])DEV([^A-Z]|$)/i;
+export function isDevGraphic(graphic: unknown): boolean {
+  return DEV_GRAPHIC_RE.test(String(graphic || ""));
+}
 export function isExcludedFromAdvancedAnalytics(r: EmbellishmentRow): boolean {
   const graphicType = String(r.col19 || "").toLowerCase();
-  return ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES.some((t) => graphicType.includes(t));
+  return (
+    ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPES.some((t) => graphicType.includes(t)) ||
+    ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPE_RE.test(graphicType) ||
+    isDevGraphic(r.col7)
+  );
+}
+
+// A DEV development graphic — by graphic number ("H27_DEV_011") or Graphic Type "DEV".
+export function isDevRow(r: EmbellishmentRow): boolean {
+  return isDevGraphic(r.col7) || String(r.col19 || "").toLowerCase().includes("dev");
+}
+
+// Advanced Analytics' "Dev graphics" toggle (2026-10-14): off = the normal view (DEV rows left out,
+// see above); on = ONLY the DEV rows, through the same cards and charts. Branding/Trial/VN stay out
+// of both.
+export function isInAdvancedAnalytics(r: EmbellishmentRow, devMode: boolean): boolean {
+  if (!devMode) return !isExcludedFromAdvancedAnalytics(r);
+  const graphicType = String(r.col19 || "").toLowerCase();
+  return (
+    isDevRow(r) &&
+    !["branding", "trial"].some((t) => graphicType.includes(t)) &&
+    !ADVANCED_ANALYTICS_EXCLUDED_GRAPHIC_TYPE_RE.test(graphicType)
+  );
+}
+
+// Standard Dashboard (Submission Pending card + Status "Submission Pending" filter): when the
+// current Category/Season selection holds ONLY DEV graphics (e.g. VS AE + HO27 — every HO27 row
+// is a dev pack), count them instead of excluding everything to 0. A mixed selection keeps the
+// normal rule, so the VS/PINK numbers still mirror Advanced Analytics.
+export function analyticsScopedRows<T extends EmbellishmentRow>(rows: T[]): T[] {
+  const normal = rows.filter((r) => isInAdvancedAnalytics(r, false));
+  if (normal.length > 0) return normal;
+  return rows.filter((r) => isInAdvancedAnalytics(r, true));
 }
 
 // col20 (Strike off Aesthetic Approval / Dropped) holds two very different kinds of content: an

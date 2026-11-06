@@ -7,6 +7,7 @@ interface GlobalSidebarProps {
   onImportExcel: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportPlanningSheet: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportCkTrackingChart: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onImportDevPack: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onOpenAuditLogs: () => void;
   auditLogsCount: number;
   currentRole?: string;
@@ -22,6 +23,7 @@ export default function GlobalSidebar({
   onImportExcel,
   onImportPlanningSheet,
   onImportCkTrackingChart,
+  onImportDevPack,
   onOpenAuditLogs,
   auditLogsCount,
   currentRole,
@@ -264,6 +266,29 @@ export default function GlobalSidebar({
                     <div className="flex flex-col text-left opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
                       <span className="text-zinc-200 text-xs font-bold">CK Tracking Chart</span>
                       <span className="text-zinc-500 text-[10px]">Upload CK tracking data</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="relative overflow-hidden group/btn">
+                <input
+                  type="file"
+                  accept=".xlsx, .xls, .xlsm"
+                  onChange={onImportDevPack}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                  title="Import Dev Pack Tracker"
+                />
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex items-center justify-between group-hover/btn:border-amber-500/50 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 shrink-0 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                      </svg>
+                    </div>
+                    <div className="flex flex-col text-left opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
+                      <span className="text-zinc-200 text-xs font-bold">Dev Pack Tracker</span>
+                      <span className="text-zinc-500 text-[10px]">DHL + concerns for DEV graphics</span>
                     </div>
                   </div>
                 </div>

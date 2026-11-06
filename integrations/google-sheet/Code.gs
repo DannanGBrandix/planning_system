@@ -287,7 +287,7 @@ var CANONICAL_PLANTS = {
   'BRANDIXEMB': 'AV', 'BRANDIX EMB': 'AV',
   'BRANDIX EMBELLISHMENT': 'AV', 'BRANDIX EMBELLISHMENTS': 'AV',
   'BRANDIXEMBELLISHMENT': 'AV', 'BRANDIXEMBELLISHMENTS': 'AV',
-  'BABL': 'BABL',
+  'BABL': 'BABL', 'ALIF': 'ALIF', 'KC': 'KC', // Alif / KC = BABL sub-plants (2026-11-05)
   'BFL': 'BFL',
   'BRANDIX': 'BRANDIX', 'BRANDIX APPAREL': 'BRANDIX', 'BRANDIX - SLEEP': 'BRANDIX',
   'BRANDIX - SPORT': 'BRANDIX', 'BRANDIX SPORT': 'BRANDIX', 'BRANDIX SLEEP': 'BRANDIX',
@@ -299,7 +299,7 @@ var CANONICAL_PLANTS = {
   'LEEMA': 'LEEMA',
   'MARTEX': 'MARTEX', 'BACK-MARTEX': 'MARTEX', 'BACK MARTEX': 'MARTEX',
   'MRC': 'MRC',
-  'REGAL': 'REGAL IMAGE', 'REGAL IMAGE': 'REGAL IMAGE', 'REEGAL': 'REGAL IMAGE', 'REEGAL IMAGE': 'REGAL IMAGE',
+  'REGAL': 'REGAL IMAGE', 'REGAL IMAGE': 'REGAL IMAGE', 'REGALIMAGE': 'REGAL IMAGE', 'REEGAL': 'REGAL IMAGE', 'REEGAL IMAGE': 'REGAL IMAGE',
   'INNER HOOD-REGAL': 'REGAL IMAGE', 'INNER HOOD REGAL': 'REGAL IMAGE',
   'RC': 'RICH COLOR', 'RICH COLOR': 'RICH COLOR',
   'SCREEN LINE': 'SCREEN LINE', 'SCREENLINE': 'SCREEN LINE',
@@ -392,6 +392,14 @@ function splitLegPlants_(legName) {
   return out.length ? out : [legTabName_(legName)];
 }
 
+// Plants of a "+" leg that own `code`: PPS onward goes to the SECOND plant only (same rule
+// as a bare "+" location), earlier steps stay on every plant. Mirror of legPlantsForCode in
+// app/lib/plantUtils.ts.
+function legPlantsForCode_(legName, code) {
+  var plants = splitLegPlants_(legName);
+  return (POST_PPS_EVENT_CODES[code] && plants.length >= 2) ? [plants[1]] : plants;
+}
+
 function isoDate_(d) {
   return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
@@ -476,7 +484,7 @@ function rebuildSheets() {
       //  - bare key on any other row -> first plant only (unchanged).
       var targets = [];   // { tab, fieldKey, old, legLabel }
       if (suffix) {
-        splitLegPlants_(suffix).forEach(function (p) {
+        legPlantsForCode_(suffix, code).forEach(function (p) {
           targets.push({ tab: p, fieldKey: key, old: String(raw), legLabel: p });
         });
       } else if (legs.length) {
@@ -488,7 +496,7 @@ function rebuildSheets() {
           var own = sched[dateStr + '_' + leg];
           if (own != null && String(own).trim()) return;   // that leg has its own value for this date
           var fieldKey = dateStr + '_' + leg;
-          splitLegPlants_(leg).forEach(function (p) {
+          legPlantsForCode_(leg, code).forEach(function (p) {
             targets.push({ tab: p, fieldKey: fieldKey, old: '', legLabel: p });
           });
         });

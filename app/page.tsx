@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
 import { encodeEventValue, parseEventValue } from "./lib/eventCodes";
 import { loadCodes } from "./lib/codesStore";
@@ -41,11 +41,13 @@ import {
   markCkChartsSynced,
   CkChartStatus,
   derivePlanStatus,
-  isExcludedFromAdvancedAnalytics,
+  isInAdvancedAnalytics,
+  analyticsScopedRows,
   groupRowsByCombo,
   getGroupStatus,
   getLastRowsSync,
   RowsSyncInfo,
+  isOnBuyList,
 } from "./lib/db";
 import Table from "./components/Table";
 import ColumnConfigModal from "./components/ColumnConfigModal";
@@ -62,6 +64,8 @@ import ImportPreviewModal, {
   ParsedImportItem,
 } from "./components/ImportPreviewModal";
 import ImportConfigModal from "./components/ImportConfigModal";
+import DevPackImportModal, { DevPackPreviewEntry } from "./components/DevPackImportModal";
+import { parseDevPackWorkbook, matchDevPackRow, applyDevPackItem } from "./lib/devPackImport";
 import CkSyncButton from "./components/CkSyncButton";
 import ActionCenterView from "./components/ActionCenterView";
 import GlobalSidebar from "./components/GlobalSidebar";
@@ -78,7 +82,8 @@ import SlaWatchlistBar from "./components/SlaWatchlistBar";
 import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
 import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
-import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants } from "./lib/plantUtils";
+import { COLOR_REPLAN_PREFIX, colorReplanKeptKeys, getColorReplanStarts, orphanedColorReplanMarkers } from "./lib/colorApprovalReplan";
+import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants, parseCrossDevGroups } from "./lib/plantUtils";
 import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
 import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
@@ -88,6 +93,8 @@ import {
   ckCategoryCanonical,
   isCkFamilyCategory,
   ckCategoriesCompatible,
+  ckCanonicalCategoryLabel,
+  LEGACY_CK,
 } from "./lib/ckCategories";
 
 // Classify an Excel cell fill color by luminance/hue instead of matching an exact hex
@@ -130,6 +137,49 @@ function classifyFillColor(rgbHex: string): "grey" | "green" | "pink" | "none" {
   return "none";
 }
 
+type StatusFilterValue = "All" | "Active" | "Dropped" | "Hold" | "Approved" | "C+P" | "Pending" | "Resubmit";
+type PlanStatusFilterValue = "All" | "Active" | "Dropped" | "Unplanned";
+// Which dashboard dropdown a filter pass leaves out, so that dropdown can list (and count) only
+// the values present under every OTHER active filter. null = apply everything.
+type FilterSkip = "ground" | "plant" | "trigger" | "category" | "season" | "status" | "planStatus" | "dhl" | "color" | "buy" | null;
+
+// The Status dropdown's filter on its own, shared by the filter pass and the dropdown's counts.
+function filterRowsByStatus(result: EmbellishmentRow[], status: StatusFilterValue): EmbellishmentRow[] {
+  if (status === "Active") {
+    // "Active" excludes both Dropped and Hold (CK "H" — CROSS DEVELOPMENT): a held item is
+    // paused, not a live submission, so it's kept out of the working set like a dropped one.
+    return result.filter((row) => {
+      const s = getRowStatus(row);
+      return s !== "dropped" && s !== "hold";
+    });
+  }
+  if (status === "Dropped") return result.filter((row) => getRowStatus(row) === "dropped");
+  if (status === "Hold") return result.filter((row) => getRowStatus(row) === "hold");
+  if (status === "Approved") return result.filter((row) => getRowStatus(row) === "approved");
+  if (status === "C+P") return result.filter((row) => getRowStatus(row) === "c+p");
+  if (status === "Pending") {
+    // The actual submission pendings — same rule as the Submission Pending card: combos
+    // (Style|Graphic|Combo|Ground) whose strike-off hasn't gone to NY yet (no DHL / strike-off
+    // comment on any live row; CK on its SP code), Branding/Trial left out. One row per combo
+    // so the table count equals the card, not one line per trigger (KNIT + LOUNGE twins).
+    return groupRowsByCombo(analyticsScopedRows(result))
+      .filter((g) => getGroupStatus(g) === "pending")
+      .map((g) => g.find((r) => getRowStatus(r) === "pending") ?? g[0]);
+  }
+  if (status === "Resubmit") return result.filter((row) => getRowStatus(row) === "resubmit");
+  return result;
+}
+
+// Plan Status (col47) filter on its own — planning-lifecycle flag.
+function filterRowsByPlanStatus(result: EmbellishmentRow[], status: PlanStatusFilterValue): EmbellishmentRow[] {
+  if (status === "All") return result;
+  return result.filter((row) => {
+    const ps = derivePlanStatus(row as unknown as Record<string, unknown>);
+    if (status === "Unplanned") return ps === "";
+    return ps === status;
+  });
+}
+
 export default function Home() {
   // App states
   const [rows, setRows] = useState<EmbellishmentRow[]>([]);
@@ -151,8 +201,11 @@ export default function Home() {
   const [selectedCategoryFilter, setSelectedCategoryFilter] =
     useState<string>("");
   const [selectedSeasonFilter, setSelectedSeasonFilter] = useState<string>("");
-  const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string>("");
+  // Multi-select: empty = all triggers.
+  const [selectedTriggerFilter, setSelectedTriggerFilter] = useState<string[]>([]);
   const [selectedPlantFilter, setSelectedPlantFilter] = useState<string>("");
+  // Ground colour (col8) filter — stored upper-cased so "Dress Blues" / "DRESS BLUES" match alike.
+  const [selectedGroundFilter, setSelectedGroundFilter] = useState<string>("");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<"All" | "Active" | "Dropped" | "Hold" | "Approved" | "C+P" | "Pending" | "Resubmit">("Active");
   // Plan Status (col47) filter — the planning-lifecycle flag, independent of the S/off Status
   // filter above and of anything Advanced Analytics reads.
@@ -161,6 +214,8 @@ export default function Home() {
   // Color Approval filter — combo-level, Approved combos only (same basis as the Advanced
   // Analytics Color Approval card): with a colour sign-off vs. still missing one.
   const [colorFilter, setColorFilter] = useState<"all" | "colorApproved" | "missingColor">("all");
+  // "Has Buy" button — only rows explicitly on the buy list (col48 "Y"), see isOnBuyList.
+  const [buyOnly, setBuyOnly] = useState(false);
   const [slaFilter, setSlaFilter] = useState<"all" | "overdue" | "dueSoon" | "priority">("all");
   const [advancedSelections, setAdvancedSelections] =
     useState<FilterSelections>({
@@ -215,6 +270,16 @@ export default function Home() {
     ckCategory?: string;
   } | null>(null);
   const [importFileName, setImportFileName] = useState<string>("");
+  // Advanced Analytics "Dev graphics" toggle (under the Season filter): on = show ONLY the DEV
+  // graphics (H27_DEV_…), which the normal view leaves out — see isInAdvancedAnalytics.
+  const [advancedDevMode, setAdvancedDevMode] = useState<boolean>(false);
+  // HO27 Dev Pack Tracker import (own parser/preview — see lib/devPackImport.ts).
+  const [devPackImport, setDevPackImport] = useState<{
+    fileName: string;
+    sheetsRead: string[];
+    sheetsSkipped: string[];
+    entries: DevPackPreviewEntry[];
+  } | null>(null);
   const [parsedImportItems, setParsedImportItems] = useState<
     ParsedImportItem[]
   >([]);
@@ -637,7 +702,12 @@ export default function Home() {
         processStr.includes("SEND TO WASH");
       const hasInvalidDyePills = hasDyePills && !isActualDye;
 
-      const hasCSRFPills = existingDateValues.some((v) => v.includes("CSRF") || v.includes("CPS"));
+      // CSRF also opens the Mock-Up / Garment flows (before SEWIN/SEWS, since 2026-10-20), so it's
+      // only a stray cut-panel pill when the row's own flow has no CSRF step.
+      const flowHasCsrf = detectMatchingFlow(r).sequence.includes("CSRF");
+      const hasCSRFPills = existingDateValues.some(
+        (v) => (v.includes("CSRF") && !flowHasCsrf) || v.includes("CPS"),
+      );
       const appFormStr = String(String(String(String(String(r.col15 || ""))))).toUpperCase();
       const isActualCutPanel = appFormStr.includes("CUT PANEL");
       const hasInvalidCutPanelPills = hasCSRFPills && !isActualCutPanel;
@@ -878,12 +948,67 @@ export default function Home() {
         const plantSetOf = (v: unknown) => new Set(extractPlants(String(v ?? "").replace(/\s+/g, " ")));
         const oldPlants = plantSetOf(originalRow.col11);
         const newPlants = plantSetOf(updatedRow.col11);
+        // BABL's sub-plants (2026-11-05): BABL -> ALIF / KC (or between them) only names the actual
+        // BABL plant — same rules, same plan. It is NOT a plant swap, so the plan is never cleared
+        // or replanned for it; the family is folded to one name for the swap test.
+        const BABL_FAMILY = new Set(["BABL", "ALIF", "KC"]);
+        const foldFamily = (s: Set<string>) => new Set([...s].map((p) => (BABL_FAMILY.has(p) ? "BABL" : p)));
+        const oldFolded = foldFamily(oldPlants);
+        const newFolded = foldFamily(newPlants);
         const isPlantSwap =
           hasExistingPlan &&
-          oldPlants.size > 0 &&
-          newPlants.size > 0 &&
-          ![...oldPlants].every((p) => newPlants.has(p)) &&
-          ![...newPlants].every((p) => oldPlants.has(p));
+          oldFolded.size > 0 &&
+          newFolded.size > 0 &&
+          ![...oldFolded].every((p) => newFolded.has(p)) &&
+          ![...newFolded].every((p) => oldFolded.has(p));
+
+        // On a split row ("Leema / BABL" -> "Leema / ALIF") the BABL leg's events live on
+        // "<date>_BABL" keys + a "_leg_BABL" marker. Move them to the new name (same dates, same
+        // values) so the leg keeps its plan; otherwise they'd be orphaned under BABL.
+        if (hasExistingPlan && !isPlantSwap) {
+          const famOut = [...oldPlants].filter((p) => BABL_FAMILY.has(p) && !newPlants.has(p));
+          const famIn = [...newPlants].filter((p) => BABL_FAMILY.has(p) && !oldPlants.has(p));
+          if (famOut.length === 1 && famIn.length === 1) {
+            const from = famOut[0];
+            // Leg keys use the leg name EXACTLY as typed in Plant (Table looks up
+            // "<date>_<raw leg>" / "_leg_<raw leg>" case-sensitively — "Leema /Alif" -> "_Alif"),
+            // so take the new leg's raw spelling, not the canonical "ALIF".
+            const to =
+              parseCrossDevGroups(String(updatedRow.col11 ?? ""))
+                .map((g) => g.name)
+                .find((n) => extractPlants(n).includes(famIn[0])) ?? famIn[0];
+            const keyRe = new RegExp(`^(\\d{4}-\\d{2}-\\d{2})_${from}$`, "i");
+            const merged: Record<string, unknown> = { ...originalRow, ...updatedRow, id: originalRow.id };
+            let moved = 0;
+            Object.keys(originalRow).forEach((k) => {
+              const val = normalizeStr(originalRow[k]);
+              if (!val) return;
+              const m = k.match(keyRe);
+              const target = m ? `${m[1]}_${to}` : k.toUpperCase() === `_LEG_${from}` ? `_leg_${to}` : null;
+              if (!target) return;
+              merged[target] = originalRow[k];
+              merged[k] = "";
+              moved += 1;
+            });
+            if (moved > 0) {
+              const outRow = merged as EmbellishmentRow;
+              await saveRow(withEventClears(outRow, originalRow));
+              setRows((prev) => prev.map((r) => (r.id === originalRow.id ? outRow : r)));
+              const logEntry: AuditLog = {
+                id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+                timestamp: new Date().toISOString(),
+                styleCode: String(originalRow.col5 || "N/A"),
+                field: "Plant",
+                oldValue: normalizeStr(originalRow.col11),
+                newValue: `${normalizeStr(updatedRow.col11)} — ${from} leg's ${moved} event(s) moved to ${to}, dates unchanged`,
+                userRole: currentRole,
+              };
+              await saveAuditLog(logEntry);
+              setAuditLogs((prev) => [logEntry, ...prev]);
+              return;
+            }
+          }
+        }
 
         if (isPlantSwap) {
           const fromPlant = normalizeStr(originalRow.col11);
@@ -1020,10 +1145,15 @@ export default function Home() {
             // must include Category + Season, not just the Trigger text. Without this, editing
             // AOQ on one season's "KNIT" row silently overwrote every other season's "KNIT" rows
             // too (confirmed: a SU27 row was showing SP27's AOQ date because of exactly this).
+            // CK-family rows have no real Trigger (col2 is just the season), so keying on it fanned
+            // one CK row's AOQ out to the whole Category+Season. CK AOQ is per row: an edit changes
+            // only the row being edited (planner, 2026-10-15 — not even same-graphic siblings).
             const getDropKey = (r: EmbellishmentRow): string => {
               const col2Val = String(r.col2 || "").trim();
               let triggerPart: string;
-              if (col2Val && col2Val.toUpperCase() !== "N/A") {
+              if (isCkFamilyCategory(String(r.col3 || ""))) {
+                triggerPart = `ROW:${r.id}`;
+              } else if (col2Val && col2Val.toUpperCase() !== "N/A") {
                 triggerPart = col2Val.toUpperCase();
               } else {
                 const col4Val = String(r.col4 || "").trim();
@@ -1542,6 +1672,11 @@ export default function Home() {
         });
       }
 
+      // A colour-approval run that no longer has any events left loses its "cpr:" marker.
+      orphanedColorReplanMarkers(clearedRow as Record<string, unknown>).forEach((k) => {
+        (clearedRow as Record<string, unknown>)[k] = "";
+      });
+
       await saveRow(withEventClears(clearedRow, originalRow));
       setRows((prev) => prev.map((r) => (r.id === rowId ? clearedRow : r)));
 
@@ -1579,6 +1714,7 @@ export default function Home() {
     startDateKey: string,
     legPlant?: string,
     flowId?: number,
+    options?: { colorApproval?: boolean },
   ) => {
     try {
       const originalRow = rows.find((r) => r.id === rowId);
@@ -1586,7 +1722,62 @@ export default function Home() {
 
       let outRow: EmbellishmentRow;
 
-      if (legPlant) {
+      if (options?.colorApproval && !legPlant) {
+        // Colour-approval ("final chop") replan — see lib/colorApprovalReplan.ts. The existing plan
+        // is KEPT exactly as it is (planned pills and verdicts alike) for every day before the
+        // picked start; a fresh full plan is built from that day onward and tagged with a
+        // "cpr:<start>" marker so Plant Performance leaves it out. Built off a copy with every
+        // dated key stripped (like the per-leg branch) so the old run's FR/PPS verdicts can't make
+        // the scheduler think the new run's steps are already done.
+        const bareInput: Record<string, unknown> = { ...originalRow };
+        Object.keys(bareInput).forEach((k) => {
+          if (/^\d{4}-\d{2}-\d{2}(_.*)?$/.test(k)) delete bareInput[k];
+        });
+        const scheduled = autoScheduleEmbellishmentRow(bareInput, flowId, startDateKey) as Record<string, unknown>;
+        // The colour-approval run stops at PPS — no NY or anything after it.
+        const newKeys = colorReplanKeptKeys(scheduled);
+        if (newKeys.length === 0) {
+          alert(
+            "Can't build a plan for this row yet — it needs both a Plant and an S-Off Requirement " +
+            "filled in. Open the row's details, complete those fields, then replan.",
+          );
+          return;
+        }
+        const clashes = Object.keys(originalRow).filter((k) => {
+          const m = k.match(/^(\d{4}-\d{2}-\d{2})(?:_.+)?$/);
+          return m && m[1] >= startDateKey && String(originalRow[k] ?? "").trim();
+        });
+        if (
+          clashes.length > 0 &&
+          !window.confirm(
+            `${clashes.length} existing event(s) sit on or after ${startDateKey} and will be replaced by the ` +
+            "colour approval plan. Everything before that day is kept. Continue?",
+          )
+        ) {
+          return;
+        }
+
+        outRow = { ...originalRow, [`${COLOR_REPLAN_PREFIX}${startDateKey}`]: "1" } as EmbellishmentRow;
+        const out = outRow as Record<string, unknown>;
+        // Free the picked day onward (bare + per-leg keys) for the new run.
+        clashes.forEach((k) => { out[k] = ""; });
+        // Legs that diverged from the shared plan ("_leg_<plant>") no longer mirror bare keys, so
+        // give them their own copy of the new run — the same plan they'd show if they mirrored.
+        const divergedLegs = Object.keys(originalRow)
+          .filter((k) => k.startsWith("_leg_") && String(originalRow[k] ?? "").trim())
+          .map((k) => k.slice("_leg_".length));
+        newKeys.forEach((k) => {
+          out[k] = scheduled[k];
+          divergedLegs.forEach((leg) => { out[`${k}_${leg}`] = scheduled[k]; });
+        });
+        // Lock the opener to the picked day so nothing re-times the new run.
+        const opener = parseEventValue(String(scheduled[startDateKey] ?? ""));
+        if (opener && opener.status === "planned" && !opener.isPinned) {
+          const pinned = encodeEventValue(opener.code, "planned", undefined, true);
+          out[startDateKey] = pinned;
+          divergedLegs.forEach((leg) => { out[`${startDateKey}_${leg}`] = pinned; });
+        }
+      } else if (legPlant) {
         // Per-plant-leg replan: schedule THIS leg as a single plant doing the full embellishment
         // (not a stage of the combined chain), off a copy with every dated key stripped so it's a
         // fresh plan from the picked date. Then write it onto the leg's own suffixed keys only and
@@ -1670,6 +1861,8 @@ export default function Home() {
           { ...originalRow },
           flowId,
           startDateKey,
+          "S",
+          { freshPlan: true },
         ) as EmbellishmentRow;
         const producedDates = Object.keys(scheduledRow).some(
           (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && String((scheduledRow as Record<string, unknown>)[k] || "").trim(),
@@ -1714,6 +1907,14 @@ export default function Home() {
         outRow = scheduledRow;
       }
 
+      // A normal (non colour-approval) whole-row replan starting on/before a colour-approval run
+      // replaces that run, so its marker goes too.
+      if (!options?.colorApproval && !legPlant) {
+        getColorReplanStarts(originalRow as Record<string, unknown>).forEach((d) => {
+          if (d >= startDateKey) (outRow as Record<string, unknown>)[`${COLOR_REPLAN_PREFIX}${d}`] = "";
+        });
+      }
+
       await saveRow(withEventClears(outRow, originalRow));
       setRows((prev) => prev.map((r) => (r.id === rowId ? outRow : r)));
 
@@ -1723,7 +1924,9 @@ export default function Home() {
         styleCode: String(originalRow.col5 || "N/A"),
         field: "System Row Operations",
         oldValue: "",
-        newValue: legPlant
+        newValue: options?.colorApproval
+          ? `Colour approval replan starting ${startDateKey} (earlier plan kept; excluded from Plant Performance)`
+          : legPlant
           ? `Replanned ${legPlant} starting ${startDateKey}`
           : `Replanned starting ${startDateKey}`,
         userRole: currentRole,
@@ -2126,6 +2329,81 @@ export default function Home() {
   // on the user picking "CK" in the import dialog by hand.
   const handleImportCkTrackingChart = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleImportExcel(e, false, true);
+  };
+
+  // "Dev Pack Tracker" entry point (HO27 Dev PACK TRACKER.xlsx). Different layout from the graphic
+  // charts, so it has its own parser (lib/devPackImport.ts) and preview instead of the generic
+  // pipeline: it only attaches DHL / concerns / cost… to DEV rows already in the plan.
+  const handleImportDevPack = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (isImportSyncingRef.current) {
+      window.alert("An import is still being saved to the database. Please wait for it to finish before starting another import.");
+      return;
+    }
+    setIsLoading(true);
+    file
+      .arrayBuffer()
+      .then((buffer) => {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const wb = XLSX.read(buffer, { type: "array", codepage: 65001 });
+        const { items, sheetsRead, sheetsSkipped } = parseDevPackWorkbook(wb, todayIso);
+        if (sheetsRead.length === 0) {
+          window.alert(`No "SL Dev pack" sheet found in ${file.name}. Sheets: ${wb.SheetNames.join(", ")}`);
+          return;
+        }
+        const entries: DevPackPreviewEntry[] = items.map((item) => {
+          const row = matchDevPackRow(item, rows);
+          if (!row) return { item, row: null, updated: null, changes: [] };
+          const { row: updated, changes } = applyDevPackItem(row, item, todayIso);
+          return { item, row, updated, changes };
+        });
+        setDevPackImport({ fileName: file.name, sheetsRead, sheetsSkipped, entries });
+      })
+      .catch((err) => {
+        console.error("Dev Pack import failed to read file:", err);
+        window.alert("Failed to read the Dev Pack tracker file.");
+      })
+      .finally(() => setIsLoading(false));
+  };
+
+  const handleConfirmDevPackImport = async () => {
+    if (!devPackImport) return;
+    // Two tracker rows can resolve to the same plan row — later one applies on top.
+    const merged = new Map<string, EmbellishmentRow>();
+    const logs: AuditLog[] = [];
+    devPackImport.entries.forEach((e) => {
+      if (!e.row || !e.updated || !e.changes.length) return;
+      const prev = merged.get(e.row.id);
+      merged.set(e.row.id, prev ? { ...prev, ...Object.fromEntries(e.changes.map((c) => [c.field, c.newValue])), col63: e.updated.col63 } : e.updated);
+      e.changes.forEach((c) =>
+        logs.push({
+          id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: new Date().toISOString(),
+          styleCode: `${String(e.row!.col7 || "")} ${String(e.row!.col6 || "")}`.trim(),
+          field: `Dev Pack: ${c.label}`,
+          oldValue: c.oldValue,
+          newValue: c.newValue,
+          userRole: currentRole,
+        }),
+      );
+    });
+    if (merged.size === 0) return;
+    setIsImportSyncing(true);
+    try {
+      await createBackup(`Before importing ${devPackImport.fileName}`, rows, "import");
+      await saveMultipleRows([...merged.values()]);
+      if (logs.length) await saveMultipleAuditLogs(logs);
+      setAuditLogs((prev) => [...logs, ...prev]);
+      setRows(await getAllRows(currentRole));
+      setDevPackImport(null);
+    } catch (err) {
+      console.error("Dev Pack import save failed:", err);
+      window.alert("Failed to save the Dev Pack tracker data.");
+    } finally {
+      setIsImportSyncing(false);
+    }
   };
 
   // ── CK Charts sync state machine ────────────────────────────────────────
@@ -3127,6 +3405,15 @@ export default function Home() {
           otherReplanReason: boolean;
         }[] = [];
 
+        // Extra updates for sibling style rows of a multi-style chart line (see the
+        // "One chart line, several style rows" block at the end of the map below).
+        const sharedStyleSiblingItems: ParsedImportItem[] = [];
+        // Strike-off tracking a multi-style chart line shares with each of its style rows.
+        const SHARED_STRIKE_OFF_KEYS = [
+          "col1", "col20", "col22", "col24", "col34", "col35", "col39", "col40", "col41", "col42",
+          "awb1", "awb2", "awb1Date", "awb2Date", "dropDate",
+        ];
+
         const parsedItemsList: ParsedImportItem[] = rawData.map(
           (row, index) => {
             const formattedRow: Partial<EmbellishmentRow> = {};
@@ -3386,12 +3673,18 @@ export default function Home() {
             if (dhlTrackingStr) {
               // Look for patterns like "DHL 7/16" or "AWB: 07/16"
               const dhlMatch = dhlTrackingStr.match(/(?:DHL|AWB|DTC|LTD)[-\s:]*(\d{1,2})\/(\d{1,2})/i);
+              let dhlDateKey = "";
               if (dhlMatch) {
                 const month = dhlMatch[1].padStart(2, '0');
                 const day = dhlMatch[2].padStart(2, '0');
                 const year = new Date().getFullYear();
-                const dhlDateKey = `${year}-${month}-${day}`; 
-                
+                dhlDateKey = `${year}-${month}-${day}`;
+              } else {
+                // PINK/VS charts write the courier as a person, not "DHL": "Victoria - 10/20 -
+                // 4560464451". Without this the NY was never marked for those rows (GPS27-079 C34).
+                dhlDateKey = extractDateFromTrackingText(dhlTrackingStr, null) || "";
+              }
+              if (dhlDateKey) {
                 // Set to NY because it was sent
                 formattedRow[dhlDateKey] = "NY";
                 dhlNyKey = dhlDateKey;
@@ -3745,6 +4038,16 @@ export default function Home() {
             // never reaches the merge. col5 is deliberately left as-is: keeping its (equally
             // bogus) value non-blank is what makes Strategy 1 correctly fail for CK instead of
             // over-matching all of a graphic's colorways — see Strategy CK below.
+            // The CK category this row is stamped with. A file-name-derived specific category
+            // ("CKNA Men's" / "CKP" / ...) wins. But when the file name only resolved to the bare
+            // "CK" fallback (e.g. "CKNA SP28 sample plan - 10.14.xlsx" — no Men/Women in the name),
+            // the sheet's own Category column ("CKNA WOMEN'S") is the real answer — use it instead
+            // of flattening every row to legacy "CK".
+            let rowCkCategory = data.ckCategory;
+            if (rowCkCategory === LEGACY_CK) {
+              const ownLabel = ckCanonicalCategoryLabel(String(formattedRow["col3"] || ""));
+              if (ownLabel && ownLabel !== LEGACY_CK) rowCkCategory = ownLabel;
+            }
             {
               const ckCat = normalize(formattedRow["col3"] || "").replace(/[^a-z0-9]/g, "");
               const isCkCat = Boolean(data.ckCategory) || ckCat === "ck" || ckCat.startsWith("ckna");
@@ -3780,8 +4083,8 @@ export default function Home() {
             // IS folded into the match identity here. This is what stops a CKNA Men's row from
             // blank-tolerantly matching a PINK / VS row that happens to share Graphic+Ground, and
             // what lets it match (and re-label) a legacy bare-"CK" row.
-            const incomingCategory = data.ckCategory
-              ? normalize(data.ckCategory)
+            const incomingCategory = rowCkCategory
+              ? normalize(rowCkCategory)
               : normalize(formattedRow["col3"] || "");
             const incomingSeason = normalize(formattedRow["col4"] || "");
 
@@ -3991,7 +4294,12 @@ export default function Home() {
             // values (which used inconsistent delimiters — "+", "/", etc. — and turned out too messy
             // to compare reliably), this one is simple and consistent: always plain numbers
             // separated by whitespace, so a token-set-overlap fallback is safe here.
-            const incomingStyleTokens = new Set(incomingStyle.split(/\s+/).filter(Boolean));
+            // "/" and "," are separators too: the PINK F27 chart writes "10352041 / 10352033" and
+            // "10357145/10356871" while the DB holds "10352041/10352033" or the single styles —
+            // splitting on whitespace alone left "/" glued to a token, so 5 existing rows showed
+            // up as "New Items" on re-import.
+            const splitStyleTokens = (s: string) => s.split(/[\s\/,]+/).filter(Boolean);
+            const incomingStyleTokens = new Set(splitStyleTokens(incomingStyle));
             const styleMatches = (dbStyleRaw: unknown): boolean => {
               const dbStyle = normalize(dbStyleRaw || "");
               // Blank-tolerant, same as the Category/Season/Fabric guards above: a file that
@@ -4004,7 +4312,7 @@ export default function Home() {
               // already created by the main Tracking Chart import.
               if (!incomingStyle || !dbStyle) return true;
               if (dbStyle === incomingStyle) return true;
-              const dbStyleTokens = dbStyle.split(/\s+/).filter(Boolean);
+              const dbStyleTokens = splitStyleTokens(dbStyle);
               return dbStyleTokens.some((t) => incomingStyleTokens.has(t));
             };
 
@@ -4342,30 +4650,11 @@ export default function Home() {
               mergedRow.__isSplitProcess = "true";
             }
 
-            // If the user uploads an Excel file to serve as the source of truth, and the Excel row
-            // has no tracking data, we should CLEAR the database tracking data to fix corrupted/wrong details.
-            if (existingMatch) {
-              const hasAwb = String(
-                row["__awb2"] || row["__awb1"] || "",
-              ).trim();
-              const hasRawAwb = Object.entries(row).some(([k, v]) => {
-                if (k.startsWith("__")) return false;
-                const sv = String(String(String(String(v || ""))))
-                  .trim()
-                  .toUpperCase();
-                return (
-                  sv.includes("DTC-") ||
-                  sv.includes("LTD-") ||
-                  sv.startsWith("DHL") ||
-                  sv.startsWith("AWB")
-                );
-              });
-
-              if (!hasAwb && !hasRawAwb) {
-                mergedRow["col24"] = ""; // Clear DHL tracking
-                mergedRow["col35"] = ""; // Clear Strike-Off submission #
-              }
-            }
+            // A chart line with no AWB no longer CLEARS the row's DHL (col24) / Strike-Off
+            // submission # (col35). Planners type DHLs into the app before NY updates the chart;
+            // re-importing F27 PINK (2026-11-02) wiped 11 hand-entered "Victoria - 10/28 - …" DHLs
+            // and pushed those combos back to Submission Pending. A non-blank AWB on the chart still
+            // overwrites via the normal merge below; to remove a wrong DHL, clear it in the app.
 
             // Sent to NY (DHL on the chart) and the matched row already has an NY in its plan: mark
             // the row's OWN planned NY green (per plan: the bare plan and every per-leg
@@ -4376,37 +4665,47 @@ export default function Home() {
             // Both chart-DERIVED dates (DHL -> NY, fabric-in -> FR) are only for rows with no plan
             // yet: on a row that already has events they're dropped here, so they never count as
             // "incoming dates" and never trigger the wipe below.
-            const nyPassKeys: string[] = [];
-            if (existingMatchHasEvents && fabricFrKey && formattedRow[fabricFrKey] === "FR") {
-              delete formattedRow[fabricFrKey];
-            }
-            if (existingMatch && dhlNyKey) {
+            // The row's own planned NY(s) — one per plan (bare / each leg) — that this DHL date is,
+            // i.e. the nearest still-planned NY within DHL_NY_MATCH_MAX_DAYS. Null when the row has
+            // no NY at all (then the DHL-date NY fallback key is kept instead).
+            const plannedNyKeysForDhl = (target: EmbellishmentRow, dhlKey: string): string[] | null => {
               const nyGroups = new Map<string, string[]>(); // "" = bare plan, else leg suffix
-              Object.entries(existingMatch).forEach(([k, v]) => {
+              Object.entries(target).forEach(([k, v]) => {
                 const m = k.match(/^(\d{4}-\d{2}-\d{2})(_.+)?$/);
                 if (!m || typeof v !== "string" || !v.trim()) return;
                 if (parseEventValue(v)?.code.toUpperCase() !== "NY") return;
                 const g = m[2] || "";
                 nyGroups.set(g, [...(nyGroups.get(g) || []), k]);
               });
-              if (nyGroups.size > 0) {
+              if (nyGroups.size === 0) return null;
+              const dhlTime = Date.parse(dhlKey);
+              const out: string[] = [];
+              nyGroups.forEach((keys) => {
+                const planned = keys.filter(
+                  (k) => parseEventValue(String((target as Record<string, unknown>)[k]))?.status === "planned",
+                );
+                if (planned.length === 0) return; // this plan's NY already has a verdict
+                const nearest = planned.reduce((a, b) =>
+                  Math.abs(Date.parse(b.slice(0, 10)) - dhlTime) < Math.abs(Date.parse(a.slice(0, 10)) - dhlTime) ? b : a,
+                );
+                // Only a DHL sent CLOSE to the planned NY is that NY happening. A DHL weeks away is
+                // a different submission (e.g. DHL 9/9 for the layout strike-off vs an NY planned
+                // 9/28 for the colour-approval round) — that planned NY must stay open, not green.
+                const gapDays = Math.abs(Date.parse(nearest.slice(0, 10)) - dhlTime) / 86_400_000;
+                if (gapDays > DHL_NY_MATCH_MAX_DAYS) return;
+                out.push(nearest);
+              });
+              return out;
+            };
+            const nyPassKeys: string[] = [];
+            if (existingMatchHasEvents && fabricFrKey && formattedRow[fabricFrKey] === "FR") {
+              delete formattedRow[fabricFrKey];
+            }
+            if (existingMatch && dhlNyKey) {
+              const keys = plannedNyKeysForDhl(existingMatch, dhlNyKey);
+              if (keys) {
                 delete formattedRow[dhlNyKey];
-                const dhlTime = Date.parse(dhlNyKey);
-                nyGroups.forEach((keys) => {
-                  const planned = keys.filter(
-                    (k) => parseEventValue(String(existingMatch![k]))?.status === "planned",
-                  );
-                  if (planned.length === 0) return; // this plan's NY already has a verdict
-                  const nearest = planned.reduce((a, b) =>
-                    Math.abs(Date.parse(b.slice(0, 10)) - dhlTime) < Math.abs(Date.parse(a.slice(0, 10)) - dhlTime) ? b : a,
-                  );
-                  // Only a DHL sent CLOSE to the planned NY is that NY happening. A DHL weeks away is
-                  // a different submission (e.g. DHL 9/9 for the layout strike-off vs an NY planned
-                  // 9/28 for the colour-approval round) — that planned NY must stay open, not green.
-                  const gapDays = Math.abs(Date.parse(nearest.slice(0, 10)) - dhlTime) / 86_400_000;
-                  if (gapDays > DHL_NY_MATCH_MAX_DAYS) return;
-                  nyPassKeys.push(nearest); // applied after the merge below
-                });
+                nyPassKeys.push(...keys); // applied after the merge below
               }
             }
 
@@ -4543,8 +4842,8 @@ export default function Home() {
             // back to "CK" when the file name isn't recognisable. Category being CK-family is what
             // getRowStatus (lib/db.ts) and the Advanced Analytics pending calc key off to route a
             // row onto the S/off Status letter-code path instead of the VS/PINK comment cascade.
-            if (data.ckCategory) {
-              mergedRow.col3 = data.ckCategory;
+            if (rowCkCategory) {
+              mergedRow.col3 = rowCkCategory;
             } else if (data.isCkImport) {
               mergedRow.col3 = "CK";
             }
@@ -4858,6 +5157,65 @@ export default function Home() {
               }
             }
 
+            // One chart line, several style rows: the PINK/VS charts write a combo shared by two
+            // styles on ONE line ("10352038/10352033"), while the database can hold each style as
+            // its own row for the same Graphic + Combo. Only the first matched row used to get the
+            // DHL / comments, so its twin sat at "Submission Pending" forever (GPF27-417 C1/C2,
+            // GPF27-112 C2). Copy this line's strike-off tracking onto every such sibling row —
+            // same Graphic + Combo, its style(s) all named on this line — and mark the sibling's
+            // own planned NY green for the DHL, exactly as for the matched row.
+            if (
+              existingMatch &&
+              matchedFromDb &&
+              !effectiveSkipNewRows &&
+              !ckGraphicOnlyIdentity &&
+              incomingStyleTokens.size > 1 &&
+              (isVsOrPinkCategory(incomingCategory) || isVsOrPinkCategory(existingMatch.col3))
+            ) {
+              const matchedId = existingMatch.id;
+              const siblings = rows.filter((r) => {
+                if (r.id === matchedId || r.is_current === false) return false;
+                if (normalize(r.col7) !== incomingGraphic) return false;
+                if (normalizeCombo(r.col6) !== incomingCombo) return false;
+                const tokens = splitStyleTokens(normalize(r.col5 || ""));
+                return (
+                  tokens.length > 0 &&
+                  tokens.every((t) => incomingStyleTokens.has(t)) &&
+                  seasonCategoryCompatible(r) &&
+                  groundCompatible(r) &&
+                  categoryLineCompatible(r)
+                );
+              });
+              siblings.forEach((sib) => {
+                const sibRow = { ...sib } as Record<string, unknown>;
+                const diffs: { key: string; label: string; oldVal: string; newVal: string }[] = [];
+                Object.keys(finalRow).forEach((k) => {
+                  if (!SHARED_STRIKE_OFF_KEYS.includes(k) && !k.startsWith("nycv:")) return;
+                  const nv = String((finalRow as Record<string, unknown>)[k] ?? "").trim();
+                  const ov = String(sibRow[k] ?? "").trim();
+                  if (!nv || nv === ov) return;
+                  sibRow[k] = (finalRow as Record<string, unknown>)[k];
+                  diffs.push({ key: k, label: columns[k] || DEFAULT_COLUMNS[k] || k, oldVal: ov, newVal: nv });
+                });
+                if (dhlNyKey) {
+                  (plannedNyKeysForDhl(sib, dhlNyKey) || []).forEach((k) => {
+                    sibRow[k] = encodeEventValue("NY", "pass");
+                    diffs.push({ key: k, label: k, oldVal: String(sib[k as keyof EmbellishmentRow] ?? ""), newVal: "NY pass" });
+                  });
+                }
+                if (diffs.length === 0) return;
+                sibRow.__diffsJson = JSON.stringify(diffs);
+                sharedStyleSiblingItems.push({
+                  mergedRow: sibRow as EmbellishmentRow,
+                  matchType: "style",
+                  trackingNo: String(sibRow.col24 || "").trim(),
+                  styleCode: String(sibRow.col5 || "").trim(),
+                  graphic: String(sibRow.col7 || "").trim(),
+                  combo: String(sibRow.col6 || "").trim(),
+                });
+              });
+            }
+
             return {
               mergedRow: finalRow,
               matchType,
@@ -4868,6 +5226,7 @@ export default function Home() {
             };
           },
         ).filter(Boolean) as ParsedImportItem[];
+        parsedItemsList.push(...sharedStyleSiblingItems);
 
         // Deliberately NOT persisted into the app-wide column config (unlike before). Each
         // unrecognized header still gets its value written onto the row under its own minted
@@ -5301,8 +5660,11 @@ export default function Home() {
     }
   };
 
-  // Filter rows based on search bar query OR active plant tab for department portal
-  const displayedRows = useMemo(() => {
+  // Filter rows based on search bar query OR active plant tab for department portal.
+  // skip: run every filter EXCEPT the Ground colour (or Plant) one — feeds that dropdown, so it
+  // lists only the values present under the other active filters (and stays listable once one
+  // is picked, instead of collapsing to that one entry).
+  const applyRowFilters = useCallback((skip: FilterSkip) => {
     // Show ALL versions in the main views (as requested by user)
     let result = [...draftRows, ...rows];
 
@@ -5329,23 +5691,23 @@ export default function Home() {
     // multi-select Category filter in the sidebar (same rationale as the Team filter above).
     // Without this skip, a single Category picked on the standard dashboard silently caps
     // what the advanced view can ever show, so its own multi-select could never widen past it.
-    if (selectedCategoryFilter && viewMode !== "advanced") {
+    if (selectedCategoryFilter && viewMode !== "advanced" && skip !== "category") {
       result = result.filter(
         (row) => (String(String(String(String(row.col3 || ""))))).trim() === selectedCategoryFilter,
       );
     }
 
     // Apply Season Dropdown Filter (also skipped in advanced mode — sidebar has its own)
-    if (selectedSeasonFilter && viewMode !== "advanced") {
+    if (selectedSeasonFilter && viewMode !== "advanced" && skip !== "season") {
       result = result.filter(
         (row) => (String(String(String(String(row.col4 || ""))))).trim() === selectedSeasonFilter,
       );
     }
 
     // Apply Trigger Dropdown Filter
-    if (selectedTriggerFilter) {
+    if (selectedTriggerFilter.length > 0 && skip !== "trigger") {
       result = result.filter(
-        (row) => (String(String(String(String(row.col2 || ""))))).trim() === selectedTriggerFilter,
+        (row) => selectedTriggerFilter.includes(String(row.col2 || "").trim()),
       );
     }
 
@@ -5353,8 +5715,15 @@ export default function Home() {
     // on the canonical plants in the Plant column (col11, or the Plant Flow chain when col11 is
     // blank), so a cross-dev "ANTLER/LEEMA" row shows under both ANTLER and LEEMA, and aliases
     // (CKT = HI EMB, AV1/AV2/BFFAV = AV …) collapse onto one entry.
-    if (selectedPlantFilter && viewMode !== "advanced") {
+    if (selectedPlantFilter && viewMode !== "advanced" && skip !== "plant") {
       result = result.filter((row) => rowFilterPlants(row).includes(selectedPlantFilter));
+    }
+
+    // Apply Ground colour Dropdown Filter (standard dashboard only) — case-insensitive on col8.
+    if (selectedGroundFilter && viewMode !== "advanced" && skip !== "ground") {
+      result = result.filter(
+        (row) => String(row.col8 || "").trim().toUpperCase() === selectedGroundFilter,
+      );
     }
 
     // Event-capsule triggers (Super Bowl, …) are hidden from EVERY default view — they're
@@ -5363,68 +5732,52 @@ export default function Home() {
     // Trigger is explicitly picked: standard dashboard via selectedTriggerFilter (above),
     // advanced view via the sidebar Trigger multi-select (advancedSelections.trigger, applied
     // further down). See isHiddenEventTrigger.
+    // Operational views (Fabric Dispatch, Plant Schedules) are the exception: a Super Bowl FS /
+    // PPS is still real work a plant has to do, so it must always appear there.
+    const operationalView = viewMode === "fabricDispatch" || viewMode === "plantSchedules";
     const aTriggerPicked =
       viewMode === "advanced"
         ? advancedSelections.trigger.length > 0
-        : !!selectedTriggerFilter;
-    if (!aTriggerPicked) {
+        : selectedTriggerFilter.length > 0;
+    // The Trigger dropdown's own scope keeps hidden event triggers, so they can still be picked.
+    if (!aTriggerPicked && !operationalView && skip !== "trigger") {
       result = result.filter((row) => !isHiddenEventTrigger(row.col2));
     }
 
     // Apply Plan Status (col47) Filter — planning-lifecycle flag, standard dashboard only.
-    if (selectedPlanStatusFilter !== "All" && viewMode !== "advanced") {
-      result = result.filter((row) => {
-        const ps = derivePlanStatus(row as unknown as Record<string, unknown>);
-        if (selectedPlanStatusFilter === "Unplanned") return ps === "";
-        return ps === selectedPlanStatusFilter;
-      });
+    if (selectedPlanStatusFilter !== "All" && viewMode !== "advanced" && skip !== "planStatus") {
+      result = filterRowsByPlanStatus(result, selectedPlanStatusFilter);
     }
 
     // Apply DHL Tracking Filter (3-state: all, withDhl, noDhl)
     // "noDhl" = Not Dispatched: rows with no DHL, no comments, no AOQ, not approved (i.e. !isRowSent).
     // This is a DISPATCH filter, not the status "Submission Pending" — that lives on the Status
     // dropdown ("Pending" = getRowStatus === "pending") and on DashboardStats card #5.
-    if (dhlFilter === "withDhl") {
+    if (skip === "dhl") {
+      // DHL dropdown's own scope — leave the DHL filter out.
+    } else if (dhlFilter === "withDhl") {
       result = result.filter((row) => (String(String(String(String(row.col24 || ""))))).trim() !== "");
     } else if (dhlFilter === "noDhl") {
       result = result.filter((row) => !isRowSent(row));
     }
 
-    // Apply Color Approval Filter — state is computed over ALL rows so a combo's colour sign-off
-    // on a row hidden by other filters still counts.
-    if (colorFilter !== "all") {
-      const byCombo = colorApprovalByCombo(rows);
+    // Apply Color Approval Filter — state is computed over the rows the other filters left (same
+    // scope Advanced Analytics' Color Approval card counts over). Computing it over ALL rows let a
+    // twin row in another Category with the same Style|Graphic|Combo|Ground (e.g. a PINK SP27 row
+    // ticked ✓ Color Approval) mark the VS-SLEEP combo colour-approved, so "Missing Color" showed
+    // 11 while the card said 14 missing.
+    if (colorFilter !== "all" && skip !== "color") {
+      const byCombo = colorApprovalByCombo(result);
       result = result.filter((row) => byCombo.get(comboKeyOf(row)) === colorFilter);
     }
 
+    if (buyOnly && skip !== "buy") {
+      result = result.filter(isOnBuyList);
+    }
+
     // Apply Status Filter (Bypass in Advanced Mode so the Sidebar Filters can handle status)
-    if (viewMode !== "advanced") {
-      if (selectedStatusFilter === "Active") {
-        // "Active" excludes both Dropped and Hold (CK "H" — CROSS DEVELOPMENT): a held item is
-        // paused, not a live submission, so it's kept out of the working set like a dropped one.
-        result = result.filter((row) => {
-          const s = getRowStatus(row);
-          return s !== "dropped" && s !== "hold";
-        });
-      } else if (selectedStatusFilter === "Dropped") {
-        result = result.filter((row) => getRowStatus(row) === "dropped");
-      } else if (selectedStatusFilter === "Hold") {
-        result = result.filter((row) => getRowStatus(row) === "hold");
-      } else if (selectedStatusFilter === "Approved") {
-        result = result.filter((row) => getRowStatus(row) === "approved");
-      } else if (selectedStatusFilter === "C+P") {
-        result = result.filter((row) => getRowStatus(row) === "c+p");
-      } else if (selectedStatusFilter === "Pending") {
-        // The actual submission pendings — same rule as the Submission Pending card: combos
-        // (Style|Graphic|Combo|Ground) whose strike-off hasn't gone to NY yet (no DHL / strike-off
-        // comment on any live row; CK on its SP code), Branding/Trial left out. One row per combo
-        // so the table count equals the card, not one line per trigger (KNIT + LOUNGE twins).
-        result = groupRowsByCombo(result.filter((r) => !isExcludedFromAdvancedAnalytics(r)))
-          .filter((g) => getGroupStatus(g) === "pending")
-          .map((g) => g.find((r) => getRowStatus(r) === "pending") ?? g[0]);
-      } else if (selectedStatusFilter === "Resubmit") {
-        result = result.filter((row) => getRowStatus(row) === "resubmit");
-      }
+    if (viewMode !== "advanced" && skip !== "status") {
+      result = filterRowsByStatus(result, selectedStatusFilter);
     }
 
     // Apply strict plant department tab filters
@@ -5640,8 +5993,10 @@ export default function Home() {
     selectedPlanStatusFilter,
     selectedTriggerFilter,
     selectedPlantFilter,
+    selectedGroundFilter,
     dhlFilter,
     colorFilter,
+    buyOnly,
     slaFilter,
     searchQuery,
     currentRole,
@@ -5650,6 +6005,33 @@ export default function Home() {
     viewMode,
     advancedSelections,
   ]);
+
+  const displayedRows = useMemo(() => applyRowFilters(null), [applyRowFilters]);
+  const groundScopeRows = useMemo(() => applyRowFilters("ground"), [applyRowFilters]);
+  const plantScopeRows = useMemo(() => applyRowFilters("plant"), [applyRowFilters]);
+  const triggerScopeRows = useMemo(() => applyRowFilters("trigger"), [applyRowFilters]);
+  const categoryScopeRows = useMemo(() => applyRowFilters("category"), [applyRowFilters]);
+  const seasonScopeRows = useMemo(() => applyRowFilters("season"), [applyRowFilters]);
+  const dhlScopeRows = useMemo(() => applyRowFilters("dhl"), [applyRowFilters]);
+  const colorScopeRows = useMemo(() => applyRowFilters("color"), [applyRowFilters]);
+  const buyScopeRows = useMemo(() => applyRowFilters("buy"), [applyRowFilters]);
+  // Status / Plan dropdown counts: how many rows each option would show under the other filters.
+  const statusScopeRows = useMemo(() => applyRowFilters("status"), [applyRowFilters]);
+  const statusOptionCounts = useMemo(() => {
+    const out: Partial<Record<StatusFilterValue, number>> = {};
+    (["Active", "Approved", "C+P", "Pending", "Resubmit", "Hold", "Dropped", "All"] as StatusFilterValue[]).forEach(
+      (s) => (out[s] = filterRowsByStatus(statusScopeRows, s).length),
+    );
+    return out;
+  }, [statusScopeRows]);
+  const planStatusScopeRows = useMemo(() => applyRowFilters("planStatus"), [applyRowFilters]);
+  const planStatusOptionCounts = useMemo(() => {
+    const out: Partial<Record<PlanStatusFilterValue, number>> = {};
+    (["All", "Active", "Dropped", "Unplanned"] as PlanStatusFilterValue[]).forEach(
+      (s) => (out[s] = filterRowsByPlanStatus(planStatusScopeRows, s).length),
+    );
+    return out;
+  }, [planStatusScopeRows]);
 
   // Same rows as displayedRows, but excluding archived (is_current: false) versions — for
   // rollup/summary views (Advanced Analytics, Action Center, Score Card, Fabric Dispatch,
@@ -5670,8 +6052,8 @@ export default function Home() {
   // Advanced Analytics counts, charts, or tables. Every other view keeps them.
   const advancedAnalyticsRows = useMemo(
     () =>
-      currentVersionRows.filter((r) => !isExcludedFromAdvancedAnalytics(r)),
-    [currentVersionRows],
+      currentVersionRows.filter((r) => isInAdvancedAnalytics(r, advancedDevMode)),
+    [currentVersionRows, advancedDevMode],
   );
 
   // The universe of options for the Advanced Analytics sidebar dropdowns — every
@@ -5683,9 +6065,9 @@ export default function Home() {
   const advancedFilterOptionRows = useMemo(
     () =>
       rows.filter(
-        (r) => r.is_current !== false && !isExcludedFromAdvancedAnalytics(r),
+        (r) => r.is_current !== false && isInAdvancedAnalytics(r, advancedDevMode),
       ),
-    [rows],
+    [rows, advancedDevMode],
   );
 
   // Trigger Manager deliberately does NOT use currentVersionRows/displayedRows above — those are
@@ -5757,6 +6139,7 @@ export default function Home() {
         onImportExcel={handleImportExcel}
         onImportPlanningSheet={handleImportPlanningSheet}
         onImportCkTrackingChart={handleImportCkTrackingChart}
+        onImportDevPack={handleImportDevPack}
         onOpenAuditLogs={() => setIsAuditDrawerOpen(true)}
         auditLogsCount={auditLogs.length}
         currentRole={currentRole}
@@ -5859,6 +6242,8 @@ export default function Home() {
                 rows={advancedFilterOptionRows}
                 selections={advancedSelections}
                 setSelections={setAdvancedSelections}
+                devMode={advancedDevMode}
+                setDevMode={setAdvancedDevMode}
               />
               <AdvancedDashboard rows={advancedAnalyticsRows} onAutoApprove={handleAutoApproveCpSp} selections={advancedSelections} onUpdateRow={handleUpdateRow} />
             </div>
@@ -6104,6 +6489,8 @@ export default function Home() {
                     setSelectedTriggerFilter={setSelectedTriggerFilter}
                     selectedPlantFilter={selectedPlantFilter}
                     setSelectedPlantFilter={setSelectedPlantFilter}
+                    selectedGroundFilter={selectedGroundFilter}
+                    setSelectedGroundFilter={setSelectedGroundFilter}
                     selectedStatusFilter={selectedStatusFilter}
                     setSelectedStatusFilter={setSelectedStatusFilter}
                     selectedPlanStatusFilter={selectedPlanStatusFilter}
@@ -6112,9 +6499,21 @@ export default function Home() {
                     setDhlFilter={setDhlFilter}
                     colorFilter={colorFilter}
                     setColorFilter={setColorFilter}
+                    buyOnly={buyOnly}
+                    setBuyOnly={setBuyOnly}
+                    buyRows={buyScopeRows}
                     selectedTeamFilter={selectedTeamFilter}
                     setSelectedTeamFilter={setSelectedTeamFilter}
                     rows={rows}
+                    groundRows={groundScopeRows}
+                    plantRows={plantScopeRows}
+                    triggerRows={triggerScopeRows}
+                    categoryRows={categoryScopeRows}
+                    seasonRows={seasonScopeRows}
+                    dhlRows={dhlScopeRows}
+                    colorRows={colorScopeRows}
+                    statusCounts={statusOptionCounts}
+                    planStatusCounts={planStatusOptionCounts}
                     onOpenConfig={() => setIsConfigOpen(true)}
                     onResetDatabase={handleResetDatabase}
                     currentRole={currentRole}
@@ -6185,6 +6584,18 @@ export default function Home() {
         logs={auditLogs}
         onClearLogs={handleClearAuditLogs}
       />
+
+      {devPackImport && (
+        <DevPackImportModal
+          fileName={devPackImport.fileName}
+          sheetsRead={devPackImport.sheetsRead}
+          sheetsSkipped={devPackImport.sheetsSkipped}
+          entries={devPackImport.entries}
+          isImporting={isImportSyncing}
+          onClose={() => setDevPackImport(null)}
+          onConfirm={handleConfirmDevPackImport}
+        />
+      )}
 
       {/* Render Import Analysis Preview Modal */}
       <ImportPreviewModal

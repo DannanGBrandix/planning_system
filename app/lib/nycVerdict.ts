@@ -106,6 +106,8 @@ export interface CommentVerdict {
 // initials is when that note was made; the text carries the verdict word. Ignores any
 // later "S/O DATED 8/19/26" style date on the same line.
 const LEAD_DATE_RE = /^\s*[A-Za-z][A-Za-z.\/&]{0,4}\s+(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\s*[:\-]?/;
+// "approved on 8/25" / "approved by victoria on 8/25" anywhere in a line without a lead date.
+const APPROVED_ON_RE = /\bAPPROVED\s+(?:BY\s+[A-Za-z.'\- ]{1,30}?\s+)?ON\s+(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\b/i;
 
 export function parseCommentVerdict(
   col22?: unknown,
@@ -123,7 +125,23 @@ export function parseCommentVerdict(
   let best: (CommentVerdict & { t: number }) | null = null;
   for (const line of lines) {
     const m = line.match(LEAD_DATE_RE);
-    if (!m) continue;
+    if (!m) {
+      // Free-text approvals with no leading initials+date: "Based on digital Approved by
+      // victoria on 8/25 (...)" — the date after "approved [by <name>] on" is the approval.
+      if (/\b(?:NOT|TO\s+BE|PENDING)\s+APPROVED\b/i.test(line)) continue;
+      const a = line.match(APPROVED_ON_RE);
+      if (!a) continue;
+      const mo = parseInt(a[1], 10);
+      const da = parseInt(a[2], 10);
+      if (!(mo >= 1 && mo <= 12 && da >= 1 && da <= 31)) continue;
+      const iso = a[3]
+        ? `${a[3].length <= 2 ? 2000 + parseInt(a[3], 10) : parseInt(a[3], 10)}-${String(mo).padStart(2, "0")}-${String(da).padStart(2, "0")}`
+        : nearestYearIso(mo, da, refIso ?? null);
+      const t = Date.parse(iso + "T00:00:00");
+      if (Number.isNaN(t)) continue;
+      if (!best || t >= best.t) best = { kind: "A", iso, t };
+      continue;
+    }
     const mo = parseInt(m[1], 10);
     const da = parseInt(m[2], 10);
     if (!(mo >= 1 && mo <= 12 && da >= 1 && da <= 31)) continue;

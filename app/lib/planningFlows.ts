@@ -1,4 +1,4 @@
-import { parseEventValue } from "./eventCodes";
+import { parseEventValue, encodeEventValue } from "./eventCodes";
 import { isSriLankaHoliday } from "./sriLankaHolidays";
 import { extractPlants } from "./plantUtils";
 
@@ -9,8 +9,11 @@ import { extractPlants } from "./plantUtils";
 // extractPlants (not a raw substring match) so it also fires correctly on multi-plant chains like
 // "BABL>>LEEMA", not just a lone "BABL" cell.
 const BABL_LONG_LEAD_DAYS = 8;
+// BABL's sub-plants Alif and KC (2026-11-05) are planned exactly like BABL: same 8-day FR/NY lead
+// and same fabric-only flow rule below.
+const BABL_FAMILY_PLANTS = new Set(["BABL", "ALIF", "KC"]);
 function isBablPlant(plantRaw: unknown): boolean {
-  return extractPlants(String(plantRaw ?? "")).includes("BABL");
+  return extractPlants(String(plantRaw ?? "")).some((p) => BABL_FAMILY_PLANTS.has(p));
 }
 
 // BABL and AV (see getPlanningCategory) only ever run the FABRICS-style
@@ -20,7 +23,7 @@ function isBablPlant(plantRaw: unknown): boolean {
 // to "AV") against BOTH the Plant (col11) and Plant Flow (col12) columns, same as every other
 // plant-structure check in this file. col12 is skipped when it's actually PROCESS free text, not a
 // plant chain (plantFlowIsProcessText) — same guard detectMatchingFlowRaw uses.
-const FABRIC_ONLY_PLANTS = new Set(["BABL", "AV"]);
+const FABRIC_ONLY_PLANTS = new Set([...BABL_FAMILY_PLANTS, "AV"]);
 function isFabricOnlyPlant(row: Record<string, unknown>): boolean {
   const plant = extractPlants(String(row.col11 ?? ""));
   const plantFlow = plantFlowIsProcessText(row.col12) ? [] : extractPlants(String(row.col12 ?? ""));
@@ -223,9 +226,10 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     id: 5,
     category: "MOCK-UPS",
     title: "Standard Mock-Ups Flow",
-    description: "Mock-up workflow starting from Sewing to FR, PPS, NY, MAST",
-    sequence: ["SEWIN/SEWS", "MOC", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    description: "Mock-up workflow starting from CSRF, Sewing to FR, PPS, NY, MAST",
+    sequence: ["CSRF", "SEWIN/SEWS", "MOC", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
@@ -236,15 +240,16 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
   {
     id: 6,
     category: "MOCK-UPS",
     title: "Mock-Ups with Emb Plant Strike-Off (PPSES)",
     description: "Mock-up workflow with Emb plant strike-off sending",
-    sequence: ["SEWIN/SEWS", "MOC", "FR", "PPSES", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    sequence: ["CSRF", "SEWIN/SEWS", "MOC", "FR", "PPSES", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSES", leadTimeDays: 1, label: "1d" },
@@ -256,15 +261,16 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
   {
     id: 7,
     category: "MOCK-UPS",
     title: "Mock-Ups with Dye Plant Strike-Off (PPSDS -> RDPS)",
     description: "Mock-up workflow with Dye plant strike-off and return dye panels",
-    sequence: ["SEWIN/SEWS", "MOC", "FR", "PPSDS", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    sequence: ["CSRF", "SEWIN/SEWS", "MOC", "FR", "PPSDS", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "MOC", leadTimeDays: 1, label: "1d" },
       { fromEvent: "MOC", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSDS", leadTimeDays: 1, label: "1d" },
@@ -277,7 +283,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 37,
+    totalLeadTimeDays: 38,
   },
 
   // ------------------------------------------------------------
@@ -287,9 +293,10 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
     id: 8,
     category: "GARMENTS",
     title: "Standard Garments Flow",
-    description: "Full garment embellishment workflow from Sewing to Garment sending, FR, PPS",
-    sequence: ["SEWIN/SEWS", "GMT", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    description: "Full garment embellishment workflow from CSRF, Sewing to Garment sending, FR, PPS",
+    sequence: ["CSRF", "SEWIN/SEWS", "GMT", "FR", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
       { fromEvent: "GMT", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPS", leadTimeDays: 2, label: "2d" },
@@ -300,15 +307,16 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
   {
     id: 9,
     category: "GARMENTS",
     title: "Garments with Emb Plant Strike-Off (PPSES)",
     description: "Garment workflow with Emb plant strike-off sending",
-    sequence: ["SEWIN/SEWS", "GMT", "FR", "PPSES", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    sequence: ["CSRF", "SEWIN/SEWS", "GMT", "FR", "PPSES", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
       { fromEvent: "GMT", toEvent: "FR", leadTimeDays: 1, label: "1d" },
       { fromEvent: "FR", toEvent: "PPSES", leadTimeDays: 1, label: "1d" },
@@ -320,15 +328,16 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
   {
     id: 10,
     category: "GARMENTS",
     title: "Garments with Return Dye Panels (RDPS)",
     description: "Garment workflow with dye panel return prior to PPS",
-    sequence: ["SEWIN/SEWS", "GMT", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
+    sequence: ["CSRF", "SEWIN/SEWS", "GMT", "RDPS", "PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"],
     steps: [
+      { fromEvent: "CSRF", toEvent: "SEWIN/SEWS", leadTimeDays: 1, label: "1d" },
       { fromEvent: "SEWIN/SEWS", toEvent: "GMT", leadTimeDays: 1, label: "1d" },
       // 2 working days, same as the PPSDS -> RDPS dye step in fabrics/mock-ups (changed 2026-09-30).
       { fromEvent: "GMT", toEvent: "RDPS", leadTimeDays: 2, label: "2d" },
@@ -340,7 +349,7 @@ export const PLANNING_FLOWS: PlanningFlow[] = [
       { fromEvent: "REAP/FCHP", toEvent: "PLSD", leadTimeDays: 7, label: "1W" },
       { fromEvent: "PLSD", toEvent: "PLSA", leadTimeDays: 3, label: "3d" },
     ],
-    totalLeadTimeDays: 36,
+    totalLeadTimeDays: 37,
   },
 
   // ------------------------------------------------------------
@@ -769,8 +778,12 @@ export function detectPlanCycles(row: Record<string, unknown>): PlanCycle[] {
   if (events.length === 0) return [];
 
   // The flow's first milestone — "FS", or a combined slot like "SEWIN/SEWS" / "CSRF-FF".
-  const firstSlot = String(detectMatchingFlow(row).sequence[0] || "").toUpperCase();
+  const cycleFlow = detectMatchingFlow(row);
+  const firstSlot = String(cycleFlow.sequence[0] || "").toUpperCase();
   const firstParts = firstSlot.split("/").map((p) => p.split("-")[0].trim()).filter(Boolean);
+  // CSRF -> SEWIN/SEWS (Mock-Ups / Garments) open a cycle together: SEWIN straight after CSRF is
+  // still the same cycle, and an older cycle on the row planned before CSRF existed opens on SEWIN.
+  if (isCsrfSewinFlow(cycleFlow)) firstParts.push("SEWIN", "SEWS");
   const isFirstMilestone = (base: string) => {
     if (!firstSlot) return false;
     if (base === firstSlot) return true;
@@ -1025,7 +1038,41 @@ function detectMatchingFlowRaw(row: Record<string, unknown>): PlanningFlow {
  * those never go to New York, so no planning event should ever be generated for either milestone.
  */
 export function detectMatchingFlow(row: Record<string, unknown>): PlanningFlow {
-  return applyGraphicTypeSkip(row, detectMatchingFlowRaw(row));
+  const flow = applyGraphicTypeSkip(row, detectMatchingFlowRaw(row));
+  return isPreCsrfSewinPlan(row) ? dropCsrfOpener(flow) : flow;
+}
+
+// Mock-Up / Garment flows open with CSRF before SEWIN/SEWS since 2026-10-20. Plans made before
+// that start at SEWIN/SEWS and must stay exactly as they are: a pass/fail or move on one of them
+// rebuilds the whole flow from its earliest date, which would otherwise wedge a CSRF onto the old
+// SEWIN date and push every later milestone a day out. So a row that already carries events but
+// no CSRF anywhere keeps the old SEWIN-first flow; a row with no events yet (or one already planned
+// the new way) gets CSRF. A Replan from a picked date passes `freshPlan` to opt back in.
+function isCsrfSewinFlow(flow: PlanningFlow): boolean {
+  return flow.sequence[0] === "CSRF" && flow.sequence[1] === "SEWIN/SEWS";
+}
+
+function dropCsrfOpener(flow: PlanningFlow): PlanningFlow {
+  if (!isCsrfSewinFlow(flow)) return flow;
+  const steps = flow.steps.slice(1);
+  return {
+    ...flow,
+    sequence: flow.sequence.slice(1),
+    steps,
+    totalLeadTimeDays: steps.reduce((sum, s) => sum + s.leadTimeDays, 0),
+  };
+}
+
+function isPreCsrfSewinPlan(row: Record<string, unknown>): boolean {
+  let hasEvent = false;
+  for (const [k, v] of Object.entries(row)) {
+    if (!/^\d{4}-\d{2}-\d{2}(_.+)?$/.test(k)) continue;
+    const s = String(v ?? "").trim();
+    if (!s) continue;
+    hasEvent = true;
+    if (s.split("|")[0].split("-")[0].trim().toUpperCase() === "CSRF") return false;
+  }
+  return hasEvent;
 }
 
 /**
@@ -1346,7 +1393,11 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   // Planning Sheet / CK Tracking Chart), per the planner: an import shouldn't stamp NY/NYC
   // submission dates in on its own, only the milestones up to PPS. Manual scheduling (Auto-
   // Schedule button, Replan, Apply Flow, the Event Status Panel) is untouched and keeps NY/NYC.
-  options?: { skipNyNyc?: boolean }
+  // freshPlan: the planner is starting a new plan from startDateStr (Replan, or the flow's opener
+  // picked on a new day) — use the current flow (CSRF opener on Mock-Ups / Garments) even if the
+  // row's older plan predates it, and treat everything before startDateStr as an earlier cycle.
+  // cycleScoped is internal (set by the history split below) — callers never pass it.
+  options?: { skipNyNyc?: boolean; freshPlan?: boolean; cycleScoped?: boolean }
 ): T {
   // STRICT GATE: a row gets planning events ONLY when it has BOTH a real Plant and a real S-Off
   // Requirement (hasCompleteAllocationContext). No S-Off Requirement -> no planning events, full
@@ -1373,6 +1424,55 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
     return cleanRow as T;
   }
 
+  // An earlier planning cycle on the row is history: it stays exactly as recorded and is never fed
+  // to the scheduler. Feeding it in let an old cycle's verdicts drive the new one — confirmed on
+  // GPS27-239 / 10336912: PPS failed 9/29, the retry was cleared, SEWIN set on 10/21 to plan again;
+  // the old PPS|F made the scheduler re-create the PPS 9/30 + NY 10/1 retry, cascade DTC-3010 onto
+  // the new SEWIN's day, and drop the new cycle's PPS/NY. The current cycle starts at startDateStr
+  // for a fresh plan, otherwise at the latest cycle detectPlanCycles finds (a pass/fail rebuild
+  // previously restarted from the row's EARLIEST date, i.e. the old cycle).
+  if (!options?.cycleScoped) {
+    let cycleStart: string | undefined;
+    if (options?.freshPlan && startDateStr) {
+      cycleStart = startDateStr;
+    } else if (!startDateStr) {
+      // Bare (shared-plan) keys only — that's all this rebuild touches. A cross-dev leg's own
+      // "<date>_<PLANT>" plan is not an earlier cycle of the shared plan (GVF27-083's _AV run from
+      // 10/20 made its whole shared plan look like history and got a duplicate one invented).
+      const bareOnly = Object.fromEntries(
+        Object.entries(row).filter(([k]) => !/^\d{4}-\d{2}-\d{2}_.+$/.test(k)),
+      );
+      const cycles = detectPlanCycles(bareOnly);
+      if (cycles.length > 1) cycleStart = cycles[cycles.length - 1].startKey;
+    }
+    const historyKeys = cycleStart
+      ? Object.keys(row).filter(
+          (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && k < cycleStart! && String(row[k] ?? "").trim(),
+        )
+      : [];
+    if (historyKeys.length > 0) {
+      const current: Record<string, unknown> = { ...row };
+      historyKeys.forEach((k) => delete current[k]);
+      const scheduled = autoScheduleEmbellishmentRow(
+        current as T,
+        flowId,
+        startDateStr,
+        eventSuffix,
+        { ...options, cycleScoped: true },
+      ) as Record<string, unknown>;
+      historyKeys.forEach((k) => {
+        // A fresh plan replaces the old run's still-projected "-S" pills (stale plan, not history —
+        // same rule as the whole-row Replan); real verdicts, pins and plant actuals stay. A plain
+        // rebuild of the current cycle leaves the earlier cycle completely untouched.
+        const v = String(row[k] ?? "");
+        scheduled[k] = options?.freshPlan && parseEventValue(v)?.status === "planned" && !parseEventValue(v)?.isPinned && /-S$/i.test(v.trim())
+          ? ""
+          : row[k];
+      });
+      return scheduled as T;
+    }
+  }
+
   // Planner-locked ("|X") milestones: {BASECODE -> the YYYY-MM-DD key it sits on}. These are
   // fixed points — the plan is built AROUND them, never over them. See ParsedEvent.isPinned.
   const pinnedDateByCode: Record<string, string> = {};
@@ -1383,9 +1483,13 @@ export function autoScheduleEmbellishmentRow<T extends Record<string, unknown>>(
   });
   const pinnedKeys = new Set(Object.values(pinnedDateByCode));
 
-  let matchedFlow = flowId
-    ? applyGraphicTypeSkip(row, PLANNING_FLOWS.find((f) => f.id === flowId) || detectMatchingFlow(row))
-    : detectMatchingFlow(row);
+  let matchedFlow = applyGraphicTypeSkip(
+    row,
+    (flowId && PLANNING_FLOWS.find((f) => f.id === flowId)) || detectMatchingFlowRaw(row),
+  );
+  if (!options?.freshPlan && isPreCsrfSewinPlan(row)) {
+    matchedFlow = dropCsrfOpener(matchedFlow);
+  }
   if (options?.skipNyNyc) {
     matchedFlow = stripNyNyc(matchedFlow);
   }
@@ -1650,17 +1754,61 @@ export function autoScheduleAnchoredToEvent<T extends Record<string, unknown>>(
   anchorCode: string,
   anchorDateStr: string,
 ): T {
-  const flow = detectMatchingFlow(row);
+  let flow = detectMatchingFlow(row);
   const targetBase = anchorCode.split("|")[0].split("-")[0].trim().toUpperCase();
 
   // Match the picked code against a sequence slot, allowing combined slots like "SEWIN/SEWS".
-  const seqIndex = flow.sequence.findIndex((slot) =>
-    slot.split("/").some((part) => part.split("-")[0].trim().toUpperCase() === targetBase),
+  const slotIndex = (f: PlanningFlow) =>
+    f.sequence.findIndex(
+      (slot) =>
+        slot.toUpperCase() === targetBase ||
+        slot.split("/").some((part) => part.split("-")[0].trim().toUpperCase() === targetBase),
+    );
+  let seqIndex = slotIndex(flow);
+
+  // Picking the flow's opener (or CSRF) on a day is the planner starting a NEW plan from there:
+  // the current flow applies (CSRF before SEWIN/SEWS on Mock-Ups / Garments, even when the row's
+  // older plan predates it — so SEWIN picked on 10/21 gives CSRF 10/20, SEWIN 10/21), and any
+  // earlier cycle on the row is history the new plan must not read (see freshPlan).
+  // Moving the opener EARLIER inside a plan (every other event still after it) is a re-time of
+  // that same plan, not a new one — it keeps the row's own flow, as before.
+  const dated = Object.keys(row).filter(
+    (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && k !== anchorDateStr && String(row[k] ?? "").trim(),
   );
+  const startsNewPlan =
+    (seqIndex <= 0 || targetBase === "CSRF") &&
+    (dated.length === 0 || dated.some((k) => k < anchorDateStr));
+  if (startsNewPlan) {
+    flow = applyGraphicTypeSkip(row, detectMatchingFlowRaw(row));
+    seqIndex = slotIndex(flow);
+  }
+  const schedOpts = startsNewPlan ? { freshPlan: true } : undefined;
+
+  // A new plan starts ON the picked day, whichever opener was picked: SEWIN picked on 10/21 gives
+  // CSRF 10/21, SEWIN 10/22 — the planner reads the picked day as "planning starts here", not "SEWIN
+  // lands here" (back-solving put CSRF on the day before). The picked planned pill is dropped so
+  // the flow's real opener takes that day; if the planner locked it, the opener inherits the lock.
+  const pickedRaw = String(row[anchorDateStr] ?? "").trim();
+  const picked = pickedRaw ? parseEventValue(pickedRaw) : null;
+  if (startsNewPlan && (!picked || picked.status === "planned")) {
+    const input: Record<string, unknown> = { ...row, [anchorDateStr]: "" };
+    const scheduled = autoScheduleEmbellishmentRow(
+      input as T,
+      flow.id,
+      anchorDateStr,
+      "S",
+      schedOpts,
+    ) as Record<string, unknown>;
+    const opener = parseEventValue(String(scheduled[anchorDateStr] ?? ""));
+    if (picked?.isPinned && opener && opener.status === "planned") {
+      scheduled[anchorDateStr] = encodeEventValue(opener.code, "planned", undefined, true);
+    }
+    return scheduled as T;
+  }
 
   // First event in the flow (or a code this flow doesn't contain): the picked date IS the start.
   if (seqIndex <= 0) {
-    return autoScheduleEmbellishmentRow(row, flow.id, anchorDateStr);
+    return autoScheduleEmbellishmentRow(row, flow.id, anchorDateStr, "S", schedOpts);
   }
 
   // Sum the lead times from the first event up to the picked one (steps[i] is the transition
@@ -1674,18 +1822,23 @@ export function autoScheduleAnchoredToEvent<T extends Record<string, unknown>>(
   const anchorBaseOf = (v: unknown) => String(v).split("|")[0].split("-")[0].toUpperCase();
 
   let startStr = toISO(subtractWorkingDays(new Date(anchorDateStr), cumulativeDays));
-  let scheduled = autoScheduleEmbellishmentRow(row, flow.id, startStr) as Record<string, unknown>;
+  let scheduled = autoScheduleEmbellishmentRow(row, flow.id, startStr, "S", schedOpts) as Record<string, unknown>;
 
   // One correction pass: public holidays between the start and the anchor can make the anchor
   // land a day or two off the picked date. Measure the gap and nudge the start to close it.
+  // Only the new run (on/after its start) counts — an earlier cycle can hold the same milestone.
   const landedKey = Object.keys(scheduled).find(
-    (k) => /^\d{4}-\d{2}-\d{2}$/.test(k) && typeof scheduled[k] === "string" && anchorBaseOf(scheduled[k]) === targetBase,
+    (k) =>
+      /^\d{4}-\d{2}-\d{2}$/.test(k) &&
+      k >= startStr &&
+      typeof scheduled[k] === "string" &&
+      anchorBaseOf(scheduled[k]) === targetBase,
   );
   if (landedKey && landedKey !== anchorDateStr) {
     const drift = Math.round((new Date(landedKey).getTime() - new Date(anchorDateStr).getTime()) / 86_400_000);
     if (drift > 0) startStr = toISO(subtractWorkingDays(new Date(startStr), drift));
     else if (drift < 0) startStr = toISO(addWorkingDays(new Date(startStr), -drift));
-    scheduled = autoScheduleEmbellishmentRow(row, flow.id, startStr) as Record<string, unknown>;
+    scheduled = autoScheduleEmbellishmentRow(row, flow.id, startStr, "S", schedOpts) as Record<string, unknown>;
   }
 
   return scheduled as T;

@@ -27,8 +27,12 @@ const CANONICAL_PLANTS: Record<string, string> = {
   "BRANDIXEMBELLISHMENT": "AV",
   "BRANDIXEMBELLISHMENTS": "AV",
 
-  // BABL
+  // BABL — and its two sub-plants Alif / KC (added 2026-11-05). They are separate plants (own
+  // name, own tab) but run exactly BABL's rules — see BABL_FAMILY_PLANTS in planningFlows.ts.
+  // KC must be listed here: an unknown 2-letter code is dropped as junk by isTrackablePlant.
   "BABL": "BABL",
+  "ALIF": "ALIF",
+  "KC": "KC",
 
   // BFL
   "BFL": "BFL",
@@ -81,6 +85,7 @@ const CANONICAL_PLANTS: Record<string, string> = {
   "REGAL": "REGAL IMAGE",
   "REGAL IMAGE": "REGAL IMAGE",
   "REGAL IMAGES": "REGAL IMAGE",
+  "REGALIMAGE": "REGAL IMAGE", // no-space spelling used as a cross-dev leg key ("<date>_REGALIMAGE")
   "REEGAL": "REGAL IMAGE",
   "REEGAL IMAGE": "REGAL IMAGE",
   "INNER HOOD-REGAL": "REGAL IMAGE",
@@ -318,6 +323,15 @@ export function parseCrossDevGroups(raw?: string | null): CrossDevGroup[] {
 }
 
 /**
+ * Is this chain stage a wash/dye vendor (BFL / MARTEX / DYNAWASH / a "WASH" step) rather than an
+ * embellishment plant? Shared by plantFromFlow and Fabric Dispatch.
+ */
+export function isWashDyeStage(stage: string): boolean {
+  const u = String(stage || "").toUpperCase();
+  return u.includes("BFL") || u.includes("MARTEX") || u.includes("DYNAWASH") || /\bWASH\b/i.test(stage);
+}
+
+/**
  * Fallback: recover the Plant (col11) from the Plant Flow (col12) chain when col11 is blank.
  * The Plant Flow spells out the same locations plus the wash/dye vendor and its sequence, e.g.
  * "BFL WA01055>>REGAL" or "REGAL IMAGE/MRC>>BFL WA01055>>REGAL IMAGE/MRC". Split on ">>"/">", drop
@@ -328,16 +342,29 @@ export function parseCrossDevGroups(raw?: string | null): CrossDevGroup[] {
 export function plantFromFlow(plantFlowRaw?: string | null): string {
   const raw = String(plantFlowRaw || "").trim();
   if (!raw) return "";
-  const isWashDye = (seg: string) => {
-    const u = seg.toUpperCase();
-    return u.includes("BFL") || u.includes("MARTEX") || u.includes("DYNAWASH") || /\bWASH\b/i.test(seg);
-  };
   const segments = raw
     .split(/>>|->|=>|>/)
     .map((s) => s.trim())
     .filter(Boolean);
-  const real = segments.find((s) => !isWashDye(s));
+  const real = segments.find((s) => !isWashDyeStage(s));
   return real || "";
+}
+
+/**
+ * The dye/wash vendor a PLANT FLOW (col12) STARTS with — "BFL" for "BFL>>EXPO / Antler" or
+ * "BFL (WA01055) >> ANTLER" — or "" when the first stage is a real plant (e.g. "CKT>>BFL>>CKT",
+ * where the dye step comes mid-chain, not first). Fabric Dispatch uses it to show the fabric's
+ * first stop in front of each leg's plant ("BFL >> EXPO", "BFL >> ANTLER"). Vendor list mirrors
+ * DYE_WASH_PLANT_NAMES in planningFlows.ts (not imported to avoid a circular import).
+ */
+export function leadingDyePlant(plantFlowRaw?: string | null): string {
+  const first = String(plantFlowRaw || "")
+    .split(/>>|->|=>|>/)
+    .map((s) => s.trim())
+    .find(Boolean);
+  if (!first) return "";
+  const u = first.toUpperCase();
+  return ["BFL", "MARTEX", "DYNAWASH"].find((name) => u.includes(name)) || "";
 }
 
 /**
@@ -466,6 +493,15 @@ export function crossDevLegNames(row: Record<string, unknown>): string[] {
 // mirror of the POST_PPS_EVENT_CODES set in integrations/google-sheet/Code.gs.
 const POST_PPS_EVENT_CODES = new Set(["PPS", "NY", "NYC", "MAST", "REAP/FCHP", "PLSD", "PLSA"]);
 
+// Plants of a cross-dev leg that own `code`. A "+" leg ("Antler+Leema" in
+// "REGALIMAGE/ANTLER+LEEMA") follows the same rule as a bare "+" location: PPS onward belongs
+// to the SECOND plant only, earlier steps stay shared by every plant of the leg.
+// Mirror of legPlantsForCode_ in integrations/google-sheet/Code.gs.
+function legPlantsForCode(leg: string, code: string): string[] {
+  const plants = splitLegPlants(leg);
+  return POST_PPS_EVENT_CODES.has(code) && plants.length >= 2 ? [plants[1]] : plants;
+}
+
 export interface PlantDateTarget {
   plant: string; // canonical individual plant -> the PLANT column + its own grid row
   fieldKey: string; // schedule key this cell confirms ("2026-09-02" or "2026-09-02_MRC")
@@ -509,7 +545,7 @@ export function resolvePlantDateTargets(
     if (!parsed || (parsed.status !== "planned" && !opts?.includeVerdicts)) return;
 
     if (suffix) {
-      splitLegPlants(suffix).forEach((p) =>
+      legPlantsForCode(suffix, parsed.code).forEach((p) =>
         push({ plant: p, fieldKey: key, legLabel: suffix, code: parsed.code, rawValue }),
       );
     } else if (legs.length) {
@@ -524,7 +560,7 @@ export function resolvePlantDateTargets(
           (row as Record<string, unknown>)[`${isoDate}_${leg}`] || "",
         ).trim();
         if (own) return; // that leg has its own value for this date — handled by the suffix branch
-        splitLegPlants(leg).forEach((p) =>
+        legPlantsForCode(leg, parsed.code).forEach((p) =>
           push({
             plant: p,
             fieldKey: `${isoDate}_${leg}`,

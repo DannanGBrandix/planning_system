@@ -23,6 +23,9 @@ interface AdvancedSidebarFiltersProps {
   rows: EmbellishmentRow[];
   selections: FilterSelections;
   setSelections: React.Dispatch<React.SetStateAction<FilterSelections>>;
+  // "Dev graphics" toggle — on = Advanced Analytics shows only DEV graphics (see page.tsx).
+  devMode?: boolean;
+  setDevMode?: (on: boolean) => void;
 }
 
 const FilterDropdown = ({ 
@@ -200,6 +203,8 @@ export default function AdvancedSidebarFilters({
   rows,
   selections,
   setSelections,
+  devMode = false,
+  setDevMode,
 }: AdvancedSidebarFiltersProps) {
   
   // Extract unique values for each filter category from ALL rows (unfiltered)
@@ -371,6 +376,22 @@ export default function AdvancedSidebarFilters({
       <div className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest mb-2">Primary</div>
       <FilterDropdown title="Category" filterKey="category" options={filterOptions.category} selected={selections.category} onSelectAll={handleSelectAll} onToggle={handleToggle} />
       <FilterDropdown title="Season" filterKey="season" options={filterOptions.season} selected={selections.season} onSelectAll={handleSelectAll} onToggle={handleToggle} />
+      {setDevMode && (
+        <button
+          onClick={() => setDevMode(!devMode)}
+          className={`mb-3 -mt-1 w-full py-2 px-3 rounded border text-xs font-bold flex items-center justify-between transition-colors ${
+            devMode
+              ? 'border-amber-400 bg-amber-400/15 text-amber-300'
+              : 'border-zinc-700 text-zinc-400 hover:border-amber-400/60 hover:text-amber-300'
+          }`}
+          title="Show only DEV development graphics (H27_DEV_…)"
+        >
+          <span>Dev graphics</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${devMode ? 'bg-amber-400 text-zinc-900' : 'bg-zinc-800 text-zinc-500'}`}>
+            {devMode ? 'ON' : 'OFF'}
+          </span>
+        </button>
+      )}
       <FilterDropdown title="Sub-Category / Drop" filterKey="subCategory" options={filterOptions.subCategory} selected={selections.subCategory} onSelectAll={handleSelectAll} onToggle={handleToggle} />
       <FilterDropdown title="Style" filterKey="style" options={filterOptions.style} selected={selections.style} onSelectAll={handleSelectAll} onToggle={handleToggle} />
       

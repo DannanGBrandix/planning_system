@@ -14,6 +14,7 @@ const isSupabaseConfigured =
   supabaseKey !== "" &&
   !supabaseKey.includes("your-supabase-service-role");
 
+const zlib = require("zlib");
 const rowColumns = require("./rowColumns");
 const planningEvents = require("./planningEvents");
 
@@ -130,6 +131,20 @@ const DEFAULT_COLUMNS = {
   col49: "2nd Submission Fabric",
   // Free-text note shown on the Fabric Dispatch page + export (what fabric is going this time).
   col50: "Fabric Dispatch Comment",
+  // HO27 Dev Pack Tracker import (lib/devPackImport.ts, 2026-10-14). Kept out of col22/col34
+  // so plant feasibility notes ("drop", "approval"...) can't flip getRowStatus. JSONB like col34+.
+  col52: "Dev Pack Concerns / Limitation",
+  col53: "Dev Pack Remark",
+  col54: "Dev Pack Cost",
+  col55: "Dev Pack Ready Date",
+  col56: "Dev Pack Pass Off Date",
+  col57: "Dev Pack Reviewed w/ Graphics Team",
+  col58: "Dev Pack Size",
+  col59: "Dev Pack Per Day Output",
+  col60: "Dev Pack RM Lead Time",
+  col61: "Dev Pack Wash Recommendation",
+  col62: "Dev Pack Vendor & Supplier",
+  col63: "Dev Pack Synced",
 };
 
 // Initial Seed Data for fallback
@@ -1094,7 +1109,10 @@ module.exports = {
     };
 
     if (useSupabase && supabase) {
-      const { error } = await supabase.from("backups").insert(backup);
+      // A full uncompressed snapshot is a multi-MB JSONB insert that blows Supabase's statement
+      // timeout, so store it gzipped as { gz: "<base64>" } (~10x smaller). getBackup inflates it.
+      const gz = zlib.gzipSync(Buffer.from(JSON.stringify(backup.data))).toString("base64");
+      const { error } = await supabase.from("backups").insert({ ...backup, data: { gz } });
       if (error) throw error;
 
       // Prune old backups beyond MAX_BACKUPS, oldest first
@@ -1141,6 +1159,10 @@ module.exports = {
     if (useSupabase && supabase) {
       const { data, error } = await supabase.from("backups").select("*").eq("id", id).single();
       if (error) throw error;
+      // New backups are gzipped (see createBackup); older ones are a plain row array.
+      if (data && data.data && typeof data.data.gz === "string") {
+        data.data = JSON.parse(zlib.gunzipSync(Buffer.from(data.data.gz, "base64")).toString("utf8"));
+      }
       return data;
     } else {
       return inMemoryBackups.find((b) => b.id === id) || null;
