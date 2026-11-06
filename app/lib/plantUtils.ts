@@ -27,8 +27,12 @@ const CANONICAL_PLANTS: Record<string, string> = {
   "BRANDIXEMBELLISHMENT": "AV",
   "BRANDIXEMBELLISHMENTS": "AV",
 
-  // BABL
+  // BABL — and its two sub-plants Alif / KC (added 2026-11-05). They are separate plants (own
+  // name, own tab) but run exactly BABL's rules — see BABL_FAMILY_PLANTS in planningFlows.ts.
+  // KC must be listed here: an unknown 2-letter code is dropped as junk by isTrackablePlant.
   "BABL": "BABL",
+  "ALIF": "ALIF",
+  "KC": "KC",
 
   // BFL
   "BFL": "BFL",

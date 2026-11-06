@@ -83,7 +83,7 @@ import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
 import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
 import { COLOR_REPLAN_PREFIX, colorReplanKeptKeys, getColorReplanStarts, orphanedColorReplanMarkers } from "./lib/colorApprovalReplan";
-import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants } from "./lib/plantUtils";
+import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants, parseCrossDevGroups } from "./lib/plantUtils";
 import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
 import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
@@ -948,12 +948,67 @@ export default function Home() {
         const plantSetOf = (v: unknown) => new Set(extractPlants(String(v ?? "").replace(/\s+/g, " ")));
         const oldPlants = plantSetOf(originalRow.col11);
         const newPlants = plantSetOf(updatedRow.col11);
+        // BABL's sub-plants (2026-11-05): BABL -> ALIF / KC (or between them) only names the actual
+        // BABL plant — same rules, same plan. It is NOT a plant swap, so the plan is never cleared
+        // or replanned for it; the family is folded to one name for the swap test.
+        const BABL_FAMILY = new Set(["BABL", "ALIF", "KC"]);
+        const foldFamily = (s: Set<string>) => new Set([...s].map((p) => (BABL_FAMILY.has(p) ? "BABL" : p)));
+        const oldFolded = foldFamily(oldPlants);
+        const newFolded = foldFamily(newPlants);
         const isPlantSwap =
           hasExistingPlan &&
-          oldPlants.size > 0 &&
-          newPlants.size > 0 &&
-          ![...oldPlants].every((p) => newPlants.has(p)) &&
-          ![...newPlants].every((p) => oldPlants.has(p));
+          oldFolded.size > 0 &&
+          newFolded.size > 0 &&
+          ![...oldFolded].every((p) => newFolded.has(p)) &&
+          ![...newFolded].every((p) => oldFolded.has(p));
+
+        // On a split row ("Leema / BABL" -> "Leema / ALIF") the BABL leg's events live on
+        // "<date>_BABL" keys + a "_leg_BABL" marker. Move them to the new name (same dates, same
+        // values) so the leg keeps its plan; otherwise they'd be orphaned under BABL.
+        if (hasExistingPlan && !isPlantSwap) {
+          const famOut = [...oldPlants].filter((p) => BABL_FAMILY.has(p) && !newPlants.has(p));
+          const famIn = [...newPlants].filter((p) => BABL_FAMILY.has(p) && !oldPlants.has(p));
+          if (famOut.length === 1 && famIn.length === 1) {
+            const from = famOut[0];
+            // Leg keys use the leg name EXACTLY as typed in Plant (Table looks up
+            // "<date>_<raw leg>" / "_leg_<raw leg>" case-sensitively — "Leema /Alif" -> "_Alif"),
+            // so take the new leg's raw spelling, not the canonical "ALIF".
+            const to =
+              parseCrossDevGroups(String(updatedRow.col11 ?? ""))
+                .map((g) => g.name)
+                .find((n) => extractPlants(n).includes(famIn[0])) ?? famIn[0];
+            const keyRe = new RegExp(`^(\\d{4}-\\d{2}-\\d{2})_${from}$`, "i");
+            const merged: Record<string, unknown> = { ...originalRow, ...updatedRow, id: originalRow.id };
+            let moved = 0;
+            Object.keys(originalRow).forEach((k) => {
+              const val = normalizeStr(originalRow[k]);
+              if (!val) return;
+              const m = k.match(keyRe);
+              const target = m ? `${m[1]}_${to}` : k.toUpperCase() === `_LEG_${from}` ? `_leg_${to}` : null;
+              if (!target) return;
+              merged[target] = originalRow[k];
+              merged[k] = "";
+              moved += 1;
+            });
+            if (moved > 0) {
+              const outRow = merged as EmbellishmentRow;
+              await saveRow(withEventClears(outRow, originalRow));
+              setRows((prev) => prev.map((r) => (r.id === originalRow.id ? outRow : r)));
+              const logEntry: AuditLog = {
+                id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+                timestamp: new Date().toISOString(),
+                styleCode: String(originalRow.col5 || "N/A"),
+                field: "Plant",
+                oldValue: normalizeStr(originalRow.col11),
+                newValue: `${normalizeStr(updatedRow.col11)} — ${from} leg's ${moved} event(s) moved to ${to}, dates unchanged`,
+                userRole: currentRole,
+              };
+              await saveAuditLog(logEntry);
+              setAuditLogs((prev) => [logEntry, ...prev]);
+              return;
+            }
+          }
+        }
 
         if (isPlantSwap) {
           const fromPlant = normalizeStr(originalRow.col11);

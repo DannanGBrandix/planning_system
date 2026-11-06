@@ -9,8 +9,11 @@ import { extractPlants } from "./plantUtils";
 // extractPlants (not a raw substring match) so it also fires correctly on multi-plant chains like
 // "BABL>>LEEMA", not just a lone "BABL" cell.
 const BABL_LONG_LEAD_DAYS = 8;
+// BABL's sub-plants Alif and KC (2026-11-05) are planned exactly like BABL: same 8-day FR/NY lead
+// and same fabric-only flow rule below.
+const BABL_FAMILY_PLANTS = new Set(["BABL", "ALIF", "KC"]);
 function isBablPlant(plantRaw: unknown): boolean {
-  return extractPlants(String(plantRaw ?? "")).includes("BABL");
+  return extractPlants(String(plantRaw ?? "")).some((p) => BABL_FAMILY_PLANTS.has(p));
 }
 
 // BABL and AV (see getPlanningCategory) only ever run the FABRICS-style
@@ -20,7 +23,7 @@ function isBablPlant(plantRaw: unknown): boolean {
 // to "AV") against BOTH the Plant (col11) and Plant Flow (col12) columns, same as every other
 // plant-structure check in this file. col12 is skipped when it's actually PROCESS free text, not a
 // plant chain (plantFlowIsProcessText) — same guard detectMatchingFlowRaw uses.
-const FABRIC_ONLY_PLANTS = new Set(["BABL", "AV"]);
+const FABRIC_ONLY_PLANTS = new Set([...BABL_FAMILY_PLANTS, "AV"]);
 function isFabricOnlyPlant(row: Record<string, unknown>): boolean {
   const plant = extractPlants(String(row.col11 ?? ""));
   const plantFlow = plantFlowIsProcessText(row.col12) ? [] : extractPlants(String(row.col12 ?? ""));
