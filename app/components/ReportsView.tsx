@@ -195,10 +195,9 @@ export default function ReportsView({ rows }: ReportsViewProps) {
   // TWO INDEPENDENT AXES, matching Advanced Analytics' Tech & Layout vs. Color Approval cards:
   //  - Overall approval = getGroupStatus (a live verdict on ANY member row wins) === 'approved'.
   //    This is the Tech & Layout number — it does NOT require color approval.
-  //  - Color approval = ANY member row's 1st/2nd Strike-Off Comment says "APPROVED FOR COLOR",
-  //    counted only among ACTIVE groups (status not Dropped/Hold — those are paused, not
-  //    "awaiting color approval"). A group can be Approved overall and STILL be missing color
-  //    approval; the two lists are allowed to overlap.
+  //  - Color approval = ANY member row's 1st/2nd Strike-Off Comment says "APPROVED FOR COLOR".
+  //    The Not Color-Approved list is drawn ONLY from the Approved groups (colour sign-off comes
+  //    after Tech & Layout), so it is always a subset of the Approved export.
   const approvedGroups = useMemo(
     () => groups.filter((g) => getGroupStatus(g.memberRows) === "approved"),
     [groups],
@@ -206,8 +205,9 @@ export default function ReportsView({ rows }: ReportsViewProps) {
   const notColorApprovedGroups = useMemo(
     () =>
       groups.filter((g) => {
-        const status = getGroupStatus(g.memberRows);
-        if (status === "dropped" || status === "hold") return false;
+        // Only Tech & Layout APPROVED graphics (2026-11-06, planner): colour approval only comes
+        // after Tech & Layout, so Pending / Comments Pending / Resubmit lines don't belong here.
+        if (getGroupStatus(g.memberRows) !== "approved") return false;
         // Branding graphics (Graphic Type col19, e.g. VV-15066) never go through colour approval —
         // keep them off this list.
         if (g.memberRows.some((r) => /branding/i.test(String(r.col19 || "")))) return false;
@@ -378,7 +378,7 @@ export default function ReportsView({ rows }: ReportsViewProps) {
 
   const exportNotColorApproved = async () => {
     if (notColorApprovedGroups.length === 0) {
-      window.alert("Every active Graphic+Style combination in this filter already has color approval.");
+      window.alert("Every approved Graphic+Style combination in this filter already has color approval.");
       return;
     }
     setBusy("notApproved");
@@ -562,9 +562,9 @@ export default function ReportsView({ rows }: ReportsViewProps) {
         <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
           Pick a Season and Category, then export the Graphic+Style approval breakdown for that
           selection. Leave a group blank to include every value. &ldquo;Approved Graphics&rdquo;
-          is the overall Tech &amp; Layout verdict; &ldquo;Not Color-Approved&rdquo; is a separate,
-          later step read from the 1st / 2nd Strike-Off Comments — the same two independent
-          numbers Advanced Analytics shows, so a graphic can appear on both exports.
+          is the overall Tech &amp; Layout verdict; &ldquo;Not Color-Approved&rdquo; lists the
+          Approved graphics that still have no colour sign-off (read from the 1st / 2nd Strike-Off
+          Comments), so every graphic on it is also on the Approved export.
         </p>
       </div>
 
