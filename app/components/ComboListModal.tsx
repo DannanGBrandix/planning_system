@@ -4,6 +4,8 @@ import {
   EmbellishmentRow,
   getRowStatus,
   hasBuy,
+  getBuyTypes,
+  buyTypeLabel,
   hasColorApproval,
   hasPlacementApproval,
 } from "../lib/db";
@@ -107,7 +109,7 @@ function BuyChip({
         busy ? "opacity-60" : ""
       }`}
     >
-      {value === "Y" ? "Has Buy" : "No Buy"}
+      {value === "Y" ? (saved === "Y" && buyTypeLabel(getBuyTypes(r))) || "Has Buy" : "No Buy"}
     </button>
   );
 }

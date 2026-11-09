@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { EmbellishmentRow, getRowStatus, isRowSent, getGroupStatus, groupRowsByCombo, hasColorApproval, hasPlacementApproval, hasStrikeOffSubmission, hasBuy } from "../lib/db";
+import { EmbellishmentRow, getRowStatus, isRowSent, getGroupStatus, groupRowsByCombo, hasColorApproval, hasPlacementApproval, hasStrikeOffSubmission, hasBuy, groupHasRegionalBuy, groupHasBablBuy, isBablBuy } from "../lib/db";
 import ComboListModal from "./ComboListModal";
 import { isCkFamilyCategory } from "../lib/ckCategories";
 import { techniqueGroupOf } from "../lib/techniqueGroups";
@@ -75,7 +75,7 @@ export default function AdvancedDashboard({
   // clicking a card opens the popup listing exactly which active combos are still missing that
   // approval (previously the card only showed a bare count with no way to see which items it
   // referred to).
-  const [approvalGapModal, setApprovalGapModal] = useState<"color" | "colorBuy" | "colorNoBuy" | "techBuyApproved" | "techBuyMissing" | "placementNeeded" | "layoutTech" | "cp" | "commentsPending" | null>(null);
+  const [approvalGapModal, setApprovalGapModal] = useState<"color" | "colorBuy" | "colorBabl" | "colorNoBuy" | "techBuyApproved" | "techBuyMissing" | "techBablApproved" | "techBablMissing" | "placementNeeded" | "layoutTech" | "cp" | "commentsPending" | null>(null);
   const [editingTriggerKey, setEditingTriggerKey] = useState<string | null>(
     null,
   );
@@ -321,10 +321,11 @@ export default function AdvancedDashboard({
     let graphicColorApproved = 0;
     let comboPlacementApproved = 0;
     let graphicPlacementApproved = 0;
-    // Color Approval split by Buy status (hasBuy, any member row wins): approved combos that
-    // have a buy vs. ones that don't, and how many of each are colour-approved.
+    // Color Approval split by Buy (any member row wins): approved combos with a Regional buy, a
+    // BABL buy (a combo with both counts in each) or no buy, and how many of each are colour-approved.
     const comboColorByBuy = {
       buy: { approved: 0, color: 0 },
+      babl: { approved: 0, color: 0 },
       noBuy: { approved: 0, color: 0 },
     };
 
@@ -334,9 +335,17 @@ export default function AdvancedDashboard({
       // Color approval is counted out of the APPROVED combos only (base = comboApproved), so
       // "missing" = approved combos still without a colour sign-off.
       if (getGroupStatus(cRows) === "approved") {
-        const bucket = cRows.some(hasBuy) ? comboColorByBuy.buy : comboColorByBuy.noBuy;
-        bucket.approved++;
-        if (cRows.some(hasColorApproval)) bucket.color++;
+        const regional = groupHasRegionalBuy(cRows);
+        const babl = groupHasBablBuy(cRows);
+        const buckets = [
+          ...(regional ? [comboColorByBuy.buy] : []),
+          ...(babl ? [comboColorByBuy.babl] : []),
+          ...(!regional && !babl ? [comboColorByBuy.noBuy] : []),
+        ];
+        buckets.forEach((bucket) => {
+          bucket.approved++;
+          if (cRows.some(hasColorApproval)) bucket.color++;
+        });
       }
       if (getGroupStatus(cRows) === "approved" && cRows.some(hasColorApproval)) comboColorApproved++;
       if (cRows.some(hasPlacementApproval)) comboPlacementApproved++;
@@ -591,6 +600,7 @@ export default function AdvancedDashboard({
     // approved + hasBuy rule as stats.combo.colorByBuy). Surfaces the row carrying the colour
     // sign-off so its comment shows in the list.
     const colorBuy: EmbellishmentRow[] = [];
+    const colorBabl: EmbellishmentRow[] = [];
     const colorNoBuy: EmbellishmentRow[] = [];
     // Placement's drill-down is the actionable work list: combos that have already cleared Tech &
     // Layout approval (the prerequisite step) but do NOT yet have placement sign-off — i.e. "these
@@ -601,6 +611,8 @@ export default function AdvancedDashboard({
     // they've come through Tech & Layout approval yet. "Missing" = has buy, not yet approved.
     const techBuyApproved: EmbellishmentRow[] = [];
     const techBuyMissing: EmbellishmentRow[] = [];
+    const techBablApproved: EmbellishmentRow[] = [];
+    const techBablMissing: EmbellishmentRow[] = [];
     // The combos behind the "C+P" and "Comments Pending" MiniStats — the exact same
     // getGroupStatus buckets the counters use, so each drill-down list and its number
     // always agree.
@@ -619,12 +631,23 @@ export default function AdvancedDashboard({
       }
       if (getGroupStatus(cRows) === "approved" && cRows.some(hasColorApproval)) {
         const shown = cRows.find(hasColorApproval) ?? cRows[0];
-        (cRows.some(hasBuy) ? colorBuy : colorNoBuy).push(shown);
+        const regional = groupHasRegionalBuy(cRows);
+        const babl = groupHasBablBuy(cRows);
+        if (regional) colorBuy.push(shown);
+        if (babl) colorBabl.push(shown);
+        if (!regional && !babl) colorNoBuy.push(shown);
       }
       const statuses = cRows.map(getRowStatus);
       const techLayoutApproved = statuses.some((s) => s === "approved");
       if (!techLayoutApproved) layoutTech.push(cRows[0]);
-      if (cRows.some(hasBuy)) {
+      if (groupHasBablBuy(cRows)) {
+        if (techLayoutApproved) {
+          techBablApproved.push(cRows.find((r) => getRowStatus(r) === "approved") ?? cRows[0]);
+        } else {
+          techBablMissing.push(cRows.find((r) => getRowStatus(r) !== "dropped" && isBablBuy(r)) ?? cRows.find(isBablBuy) ?? cRows[0]);
+        }
+      }
+      if (groupHasRegionalBuy(cRows)) {
         if (techLayoutApproved) {
           techBuyApproved.push(cRows.find((r) => getRowStatus(r) === "approved") ?? cRows[0]);
         } else {
@@ -659,6 +682,9 @@ export default function AdvancedDashboard({
     };
     color.sort(byGraphicThenCombo);
     colorBuy.sort(byGraphicThenCombo);
+    colorBabl.sort(byGraphicThenCombo);
+    techBablApproved.sort(byGraphicThenCombo);
+    techBablMissing.sort(byGraphicThenCombo);
     colorNoBuy.sort(byGraphicThenCombo);
     placementNeeded.sort(byGraphicThenCombo);
     layoutTech.sort(byGraphicThenCombo);
@@ -667,7 +693,7 @@ export default function AdvancedDashboard({
     cp.sort(byGraphicThenCombo);
     commentsPending.sort(byGraphicThenCombo);
 
-    return { color, colorBuy, colorNoBuy, techBuyApproved, techBuyMissing, placementNeeded, layoutTech, cp, commentsPending };
+    return { color, colorBuy, colorBabl, colorNoBuy, techBuyApproved, techBuyMissing, techBablApproved, techBablMissing, placementNeeded, layoutTech, cp, commentsPending };
   }, [rows]);
 
   // Donut data — the 6 exclusive combo status buckets, so the ring is a true
@@ -1626,24 +1652,43 @@ export default function AdvancedDashboard({
               onClick={() => setApprovalGapModal("layoutTech")}
               breakdown={(() => {
                 const buyTotal = approvalGapLists.techBuyApproved.length + approvalGapLists.techBuyMissing.length;
+                const bablTotal = approvalGapLists.techBablApproved.length + approvalGapLists.techBablMissing.length;
                 return [
                   {
-                    label: "Buy · Approved",
+                    label: "Regional · Approved",
                     value: approvalGapLists.techBuyApproved.length,
                     total: buyTotal,
                     totalLabel: "with buy",
                     color: "#60a5fa",
-                    tooltip: `Click to see the ${approvalGapLists.techBuyApproved.length} buy combos that came through Tech & Layout approval`,
+                    tooltip: `Click to see the ${approvalGapLists.techBuyApproved.length} Regional buy combos that came through Tech & Layout approval`,
                     onClick: () => setApprovalGapModal("techBuyApproved"),
                   },
                   {
-                    label: "Buy · Missing",
+                    label: "Regional · Missing",
                     value: approvalGapLists.techBuyMissing.length,
                     total: buyTotal,
                     totalLabel: "with buy",
                     color: "#f87171",
-                    tooltip: `Click to see the ${approvalGapLists.techBuyMissing.length} combos that have a buy but are NOT Tech & Layout approved yet`,
+                    tooltip: `Click to see the ${approvalGapLists.techBuyMissing.length} combos that have a Regional buy but are NOT Tech & Layout approved yet`,
                     onClick: () => setApprovalGapModal("techBuyMissing"),
+                  },
+                  {
+                    label: "BABL · Approved",
+                    value: approvalGapLists.techBablApproved.length,
+                    total: bablTotal,
+                    totalLabel: "with buy",
+                    color: "#a78bfa",
+                    tooltip: `Click to see the ${approvalGapLists.techBablApproved.length} BABL buy combos that came through Tech & Layout approval`,
+                    onClick: () => setApprovalGapModal("techBablApproved"),
+                  },
+                  {
+                    label: "BABL · Missing",
+                    value: approvalGapLists.techBablMissing.length,
+                    total: bablTotal,
+                    totalLabel: "with buy",
+                    color: "#f87171",
+                    tooltip: `Click to see the ${approvalGapLists.techBablMissing.length} combos that have a BABL buy but are NOT Tech & Layout approved yet`,
+                    onClick: () => setApprovalGapModal("techBablMissing"),
                   },
                 ];
               })()}
@@ -1660,11 +1705,18 @@ export default function AdvancedDashboard({
               onClick={() => setApprovalGapModal("color")}
               breakdown={[
                 {
-                  label: "Has Buy",
+                  label: "Regional Buy",
                   value: stats.combo.colorByBuy.buy.color,
                   total: stats.combo.colorByBuy.buy.approved,
                   color: "#34d399",
                   onClick: () => setApprovalGapModal("colorBuy"),
+                },
+                {
+                  label: "BABL Buy",
+                  value: stats.combo.colorByBuy.babl.color,
+                  total: stats.combo.colorByBuy.babl.approved,
+                  color: "#a78bfa",
+                  onClick: () => setApprovalGapModal("colorBabl"),
                 },
                 {
                   label: "No Buy",
@@ -2022,13 +2074,19 @@ export default function AdvancedDashboard({
             approvalGapModal === "color"
               ? "Missing Color Approval"
               : approvalGapModal === "colorBuy"
-                ? "Color Approved — Has Buy"
+                ? "Color Approved — Regional Buy"
+                : approvalGapModal === "colorBabl"
+                  ? "Color Approved — BABL Buy"
                 : approvalGapModal === "colorNoBuy"
                   ? "Color Approved — No Buy"
                   : approvalGapModal === "techBuyApproved"
-                    ? "Has Buy — Tech & Layout Approved"
+                    ? "Regional Buy — Tech & Layout Approved"
                     : approvalGapModal === "techBuyMissing"
-                      ? "Has Buy — Missing Tech & Layout Approval"
+                      ? "Regional Buy — Missing Tech & Layout Approval"
+                    : approvalGapModal === "techBablApproved"
+                      ? "BABL Buy — Tech & Layout Approved"
+                    : approvalGapModal === "techBablMissing"
+                      ? "BABL Buy — Missing Tech & Layout Approval"
                   : approvalGapModal === "placementNeeded"
                 ? "Needs Placement Approval"
                 : approvalGapModal === "cp"
@@ -2047,26 +2105,38 @@ export default function AdvancedDashboard({
                   : approvalGapModal === "color"
                     ? `${approvalGapLists.color.length} approved combo${approvalGapLists.color.length === 1 ? "" : "s"} still without a colour sign-off`
                     : approvalGapModal === "colorBuy"
-                      ? `${approvalGapLists.colorBuy.length} colour-approved combo${approvalGapLists.colorBuy.length === 1 ? "" : "s"} that came for the buy`
+                      ? `${approvalGapLists.colorBuy.length} colour-approved combo${approvalGapLists.colorBuy.length === 1 ? "" : "s"} with a Regional buy`
+                      : approvalGapModal === "colorBabl"
+                        ? `${approvalGapLists.colorBabl.length} colour-approved combo${approvalGapLists.colorBabl.length === 1 ? "" : "s"} with a BABL buy`
                       : approvalGapModal === "colorNoBuy"
                         ? `${approvalGapLists.colorNoBuy.length} colour-approved combo${approvalGapLists.colorNoBuy.length === 1 ? "" : "s"} with no buy`
                         : approvalGapModal === "techBuyApproved"
-                          ? `${approvalGapLists.techBuyApproved.length} buy combo${approvalGapLists.techBuyApproved.length === 1 ? "" : "s"} that came through Tech & Layout approval`
+                          ? `${approvalGapLists.techBuyApproved.length} Regional buy combo${approvalGapLists.techBuyApproved.length === 1 ? "" : "s"} that came through Tech & Layout approval`
                           : approvalGapModal === "techBuyMissing"
-                            ? `${approvalGapLists.techBuyMissing.length} combo${approvalGapLists.techBuyMissing.length === 1 ? "" : "s"} with a buy but NOT Tech & Layout approved yet`
-                            : undefined
+                            ? `${approvalGapLists.techBuyMissing.length} combo${approvalGapLists.techBuyMissing.length === 1 ? "" : "s"} with a Regional buy but NOT Tech & Layout approved yet`
+                            : approvalGapModal === "techBablApproved"
+                              ? `${approvalGapLists.techBablApproved.length} BABL buy combo${approvalGapLists.techBablApproved.length === 1 ? "" : "s"} that came through Tech & Layout approval`
+                              : approvalGapModal === "techBablMissing"
+                                ? `${approvalGapLists.techBablMissing.length} combo${approvalGapLists.techBablMissing.length === 1 ? "" : "s"} with a BABL buy but NOT Tech & Layout approved yet`
+                                : undefined
           }
           rows={
             approvalGapModal === "color"
               ? approvalGapLists.color
               : approvalGapModal === "colorBuy"
                 ? approvalGapLists.colorBuy
+                : approvalGapModal === "colorBabl"
+                  ? approvalGapLists.colorBabl
                 : approvalGapModal === "colorNoBuy"
                   ? approvalGapLists.colorNoBuy
                   : approvalGapModal === "techBuyApproved"
                     ? approvalGapLists.techBuyApproved
                     : approvalGapModal === "techBuyMissing"
                       ? approvalGapLists.techBuyMissing
+                    : approvalGapModal === "techBablApproved"
+                      ? approvalGapLists.techBablApproved
+                    : approvalGapModal === "techBablMissing"
+                      ? approvalGapLists.techBablMissing
                   : approvalGapModal === "placementNeeded"
                 ? approvalGapLists.placementNeeded
                 : approvalGapModal === "cp"

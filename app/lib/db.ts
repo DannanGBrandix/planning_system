@@ -1471,6 +1471,41 @@ export function isOnBuyList(r: EmbellishmentRow): boolean {
   return String(r.col48 || '').trim().toUpperCase() === 'Y';
 }
 
+// What kind of buy a row on the buy list has. One graphic can hold both, e.g. "Regional + BABL".
+// BABL covers every Bangladesh buy. Stored under the named key `buyType`, not a colN slot: the
+// import mints colN numbers for unknown headers, and col64-col70 are already full of those.
+// A buy-list row with no type yet is Regional — every buy set before the types existed was.
+export type BuyType = 'Regional' | 'BABL';
+export const BUY_TYPES: BuyType[] = ['Regional', 'BABL'];
+
+export function getBuyTypes(r: EmbellishmentRow): BuyType[] {
+  if (!isOnBuyList(r)) return [];
+  const v = String(r.buyType || '').toUpperCase();
+  const types = BUY_TYPES.filter((t) => v.includes(t.toUpperCase()));
+  return types.length ? types : ['Regional'];
+}
+
+// Always Regional before BABL, whatever order the buys arrived in.
+export function buyTypeLabel(types: BuyType[]): string {
+  return BUY_TYPES.filter((t) => types.includes(t)).join(' + ');
+}
+
+// Combo-level buy tests for Advanced Analytics — any member row wins, and a combo with both types
+// counts on both sides. Regional is today's hasBuy rule (colour-approved fallback included) minus
+// combos whose only real buy is BABL; a fallback sibling must not make a BABL-only combo Regional.
+export function groupHasRegionalBuy(rows: EmbellishmentRow[]): boolean {
+  const listed = rows.filter(isOnBuyList);
+  return listed.length ? listed.some((r) => getBuyTypes(r).includes('Regional')) : rows.some(hasBuy);
+}
+
+export function groupHasBablBuy(rows: EmbellishmentRow[]): boolean {
+  return rows.some(isBablBuy);
+}
+
+export function isBablBuy(r: EmbellishmentRow): boolean {
+  return getBuyTypes(r).includes('BABL');
+}
+
 // Graphic Type (col19) values the business does NOT want inflating Advanced Analytics'
 // counts, charts, or tables — "branding" (logo/care-label brandings, not real graphic
 // developments) and "trial" (added 2026-09-15, same reasoning: not a production graphic).

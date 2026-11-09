@@ -25,7 +25,7 @@ function getMondayOfCurrentWeek(): string {
   const monday = new Date(d.setDate(diff));
   return toLocalDateStr(monday);
 }
-import { EmbellishmentRow, ColumnMapping, getRowStatus, getTriggerCatalog, TriggerCatalogEntry, hasBuy } from "../lib/db";
+import { EmbellishmentRow, ColumnMapping, getRowStatus, getTriggerCatalog, TriggerCatalogEntry, hasBuy, getBuyTypes, buyTypeLabel } from "../lib/db";
 import { isCkFamilyCategory } from "../lib/ckCategories";
 import RowDetailsModal from "./RowDetailsModal";
 import EventStatusPanel from "./EventStatusPanel";
@@ -1034,7 +1034,7 @@ export default function Table({
         .filter((k) => columns[k]);
       const cellText = (row: EmbellishmentRow, key: string): string => {
         if (key === "col1") return getDisplayStatus(row);
-        if (key === "col48") return hasBuy(row) ? "Has Buy" : "No Buy";
+        if (key === "col48") return hasBuy(row) ? buyTypeLabel(getBuyTypes(row)) || "Has Buy" : "No Buy";
         if (key === "col41" || key === "col42") {
           const mark = normApprovalMark((row as Record<string, unknown>)[key]);
           return mark === "Y" ? "Approved" : mark === "N" ? "Not Approved" : "Pending";
@@ -1961,6 +1961,7 @@ export default function Table({
                       // Custom rendering for Buy (col48) — two-state Has Buy / No Buy toggle
                       if (key === "col48") {
                         const yes = hasBuy(row as EmbellishmentRow); // blank col48 falls back to colour approval
+                        const buyLabel = yes ? buyTypeLabel(getBuyTypes(row as EmbellishmentRow)) || "Has Buy" : "No Buy";
                         return (
                           <td
                             key={key}
@@ -1978,18 +1979,18 @@ export default function Table({
                             }`}
                             title={
                               isEditable
-                                ? `Click to toggle: currently ${yes ? "Has Buy" : "No Buy"}`
-                                : yes ? "Has Buy" : "No Buy"
+                                ? `Click to toggle: currently ${buyLabel}`
+                                : buyLabel
                             }
                           >
                             <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider border shadow-xs ${
+                              className={`inline-flex items-center whitespace-nowrap px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider border shadow-xs ${
                                 yes
                                   ? "bg-emerald-500/25 text-emerald-300 border-emerald-500/50"
                                   : "bg-slate-800/60 text-slate-400 border-slate-600"
                               }`}
                             >
-                              {yes ? "Has Buy" : "No Buy"}
+                              {buyLabel}
                             </span>
                           </td>
                         );

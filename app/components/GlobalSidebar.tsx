@@ -8,6 +8,7 @@ interface GlobalSidebarProps {
   onImportPlanningSheet: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportCkTrackingChart: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportDevPack: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onImportBuyList: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onOpenAuditLogs: () => void;
   auditLogsCount: number;
   currentRole?: string;
@@ -24,6 +25,7 @@ export default function GlobalSidebar({
   onImportPlanningSheet,
   onImportCkTrackingChart,
   onImportDevPack,
+  onImportBuyList,
   onOpenAuditLogs,
   auditLogsCount,
   currentRole,
@@ -266,6 +268,29 @@ export default function GlobalSidebar({
                     <div className="flex flex-col text-left opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
                       <span className="text-zinc-200 text-xs font-bold">CK Tracking Chart</span>
                       <span className="text-zinc-500 text-[10px]">Upload CK tracking data</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="relative overflow-hidden group/btn">
+                <input
+                  type="file"
+                  accept=".xlsx, .xls, .xlsm"
+                  onChange={onImportBuyList}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                  title="Import Buy Graphics"
+                />
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex items-center justify-between group-hover/btn:border-amber-500/50 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 shrink-0 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                      </svg>
+                    </div>
+                    <div className="flex flex-col text-left opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
+                      <span className="text-zinc-200 text-xs font-bold">Import Buy Graphics</span>
+                      <span className="text-zinc-500 text-[10px]">Regional or BABL buy list</span>
                     </div>
                   </div>
                 </div>

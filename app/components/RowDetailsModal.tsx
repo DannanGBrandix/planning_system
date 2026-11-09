@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { EmbellishmentRow, ColumnMapping, hasBuy } from "../lib/db";
+import { EmbellishmentRow, ColumnMapping, hasBuy, getBuyTypes, buyTypeLabel } from "../lib/db";
 import { parseDhlTrackingItems, getDisplayStatus } from "./Table";
 import { PLANNING_FLOWS, detectMatchingFlow, autoScheduleEmbellishmentRow } from "../lib/planningFlows";
 import { EVENT_CODES } from "../lib/eventCodes";
@@ -400,12 +400,29 @@ export default function RowDetailsModal({ isOpen, onClose, row, columns, onUpdat
                   </select>
                 ) : key === "col48" ? (
                   <select
-                    value={editForm && hasBuy(editForm as EmbellishmentRow) ? "Y" : "N"}
-                    onChange={(e) => setEditForm(prev => prev ? { ...prev, [key]: e.target.value } : null)}
+                    value={
+                      editForm && hasBuy(editForm as EmbellishmentRow)
+                        ? buyTypeLabel(getBuyTypes(editForm as EmbellishmentRow)) || "Y"
+                        : "N"
+                    }
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setEditForm(prev => {
+                        if (!prev) return null;
+                        if (v === "N") return { ...prev, [key]: "N", buyType: "" };
+                        return { ...prev, [key]: "Y", buyType: v };
+                      });
+                    }}
                     className="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-sm font-semibold rounded-lg px-3 py-2.5 text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all shadow-sm cursor-pointer"
                   >
                     <option value="N">✗ No Buy</option>
-                    <option value="Y">✓ Has Buy</option>
+                    {/* Colour-approved row with no real buy yet: only shown so its current state displays. */}
+                    {editForm && hasBuy(editForm as EmbellishmentRow) && getBuyTypes(editForm as EmbellishmentRow).length === 0 && (
+                      <option value="Y" disabled>✓ Has Buy (colour approved)</option>
+                    )}
+                    <option value="Regional">✓ Regional</option>
+                    <option value="BABL">✓ BABL</option>
+                    <option value="Regional + BABL">✓ Regional + BABL</option>
                   </select>
                 ) : (
                   <input

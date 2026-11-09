@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { EmbellishmentRow, isRowSent, colorApprovalByCombo, isOnBuyList } from "../lib/db";
+import { EmbellishmentRow, isRowSent, colorApprovalByCombo, isOnBuyList, getBuyTypes, BUY_TYPES, BuyType } from "../lib/db";
 import { rowFilterPlants } from "../lib/plantUtils";
 
 interface FilterControlsProps {
@@ -23,6 +23,8 @@ interface FilterControlsProps {
   setColorFilter?: (colorFilter: "all" | "colorApproved" | "missingColor") => void;
   buyOnly?: boolean;
   setBuyOnly?: (buyOnly: boolean) => void;
+  buyTypeFilter?: "all" | BuyType;
+  setBuyTypeFilter?: (type: "all" | BuyType) => void;
   rows: EmbellishmentRow[];
   // Rows left by every active filter except Ground — scopes the Ground dropdown. Falls back to rows.
   groundRows?: EmbellishmentRow[];
@@ -73,6 +75,8 @@ export default function FilterControls({
   setColorFilter,
   buyOnly,
   setBuyOnly,
+  buyTypeFilter,
+  setBuyTypeFilter,
   rows,
   groundRows,
   plantRows,
@@ -219,6 +223,7 @@ export default function FilterControls({
   }, [colorRows, rows]);
 
   const buyCount = useMemo(() => (buyRows ?? rows).filter(isOnBuyList).length, [buyRows, rows]);
+  const buyTypeCount = (type: BuyType) => (buyRows ?? rows).filter((r) => getBuyTypes(r).includes(type)).length;
 
   const hasActiveFilters = Boolean(
     searchQuery ||
@@ -240,6 +245,7 @@ export default function FilterControls({
     if (setDhlFilter) setDhlFilter("all");
     if (setColorFilter) setColorFilter("all");
     if (setBuyOnly) setBuyOnly(false);
+    if (setBuyTypeFilter) setBuyTypeFilter("all");
     if (setSelectedCategoryFilter) setSelectedCategoryFilter("");
     if (setSelectedSeasonFilter) setSelectedSeasonFilter("");
     if (setSelectedTriggerFilter) setSelectedTriggerFilter([]);
@@ -704,6 +710,7 @@ export default function FilterControls({
             onClick={() => {
               const next = !buyOnly;
               setBuyOnly(next);
+              if (!next && setBuyTypeFilter) setBuyTypeFilter("all");
               if (next && setSelectedStatusFilter) setSelectedStatusFilter("All");
             }}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border cursor-pointer ${
@@ -718,6 +725,23 @@ export default function FilterControls({
             </svg>
             Has Buy ({buyCount})
           </button>
+        )}
+
+        {buyOnly && setBuyTypeFilter && (
+          <select
+            suppressHydrationWarning
+            value={buyTypeFilter ?? "all"}
+            onChange={(e) => setBuyTypeFilter(e.target.value as "all" | BuyType)}
+            title="Filter the buy list by type of buy"
+            className="px-3 py-2 bg-white dark:bg-zinc-900 border border-emerald-500/30 rounded-xl text-xs font-semibold text-zinc-700 dark:text-zinc-300 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="all">All buys</option>
+            {BUY_TYPES.map((t) => (
+              <option key={t} value={t}>
+                {t} ({buyTypeCount(t)})
+              </option>
+            ))}
+          </select>
         )}
 
         {currentRole === "Planner" && selectedTeamFilter !== undefined && setSelectedTeamFilter && (

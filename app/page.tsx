@@ -48,6 +48,8 @@ import {
   getLastRowsSync,
   RowsSyncInfo,
   isOnBuyList,
+  getBuyTypes,
+  BuyType,
 } from "./lib/db";
 import Table from "./components/Table";
 import ColumnConfigModal from "./components/ColumnConfigModal";
@@ -66,6 +68,8 @@ import ImportPreviewModal, {
 import ImportConfigModal from "./components/ImportConfigModal";
 import DevPackImportModal, { DevPackPreviewEntry } from "./components/DevPackImportModal";
 import { parseDevPackWorkbook, matchDevPackRow, applyDevPackItem } from "./lib/devPackImport";
+import { parseBuyWorkbook, ParsedBuyFile, BuyRowUpdate } from "./lib/buyImport";
+import BuyImportModal from "./components/BuyImportModal";
 import CkSyncButton from "./components/CkSyncButton";
 import ActionCenterView from "./components/ActionCenterView";
 import GlobalSidebar from "./components/GlobalSidebar";
@@ -216,6 +220,7 @@ export default function Home() {
   const [colorFilter, setColorFilter] = useState<"all" | "colorApproved" | "missingColor">("all");
   // "Has Buy" button — only rows explicitly on the buy list (col48 "Y"), see isOnBuyList.
   const [buyOnly, setBuyOnly] = useState(false);
+  const [buyTypeFilter, setBuyTypeFilter] = useState<"all" | BuyType>("all");
   const [slaFilter, setSlaFilter] = useState<"all" | "overdue" | "dueSoon" | "priority">("all");
   const [advancedSelections, setAdvancedSelections] =
     useState<FilterSelections>({
@@ -273,6 +278,8 @@ export default function Home() {
   // Advanced Analytics "Dev graphics" toggle (under the Season filter): on = show ONLY the DEV
   // graphics (H27_DEV_…), which the normal view leaves out — see isInAdvancedAnalytics.
   const [advancedDevMode, setAdvancedDevMode] = useState<boolean>(false);
+  // "Import Buy Graphics" (own parser/preview — see lib/buyImport.ts).
+  const [buyImport, setBuyImport] = useState<{ fileName: string; parsed: ParsedBuyFile } | null>(null);
   // HO27 Dev Pack Tracker import (own parser/preview — see lib/devPackImport.ts).
   const [devPackImport, setDevPackImport] = useState<{
     fileName: string;
@@ -2401,6 +2408,60 @@ export default function Home() {
     } catch (err) {
       console.error("Dev Pack import save failed:", err);
       window.alert("Failed to save the Dev Pack tracker data.");
+    } finally {
+      setIsImportSyncing(false);
+    }
+  };
+
+  const handleImportBuyList = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (isImportSyncingRef.current) {
+      window.alert("An import is still being saved to the database. Please wait for it to finish before starting another import.");
+      return;
+    }
+    setIsLoading(true);
+    file
+      .arrayBuffer()
+      .then((buffer) => {
+        // cellStyles is what makes SheetJS report rows hidden by an Excel filter.
+        const parsed = parseBuyWorkbook(XLSX.read(buffer, { type: "array", codepage: 65001, cellStyles: true }));
+        if (parsed.lines.length === 0 && parsed.unreadable.length === 0) {
+          window.alert(`No buy graphics found in ${file.name}.`);
+          return;
+        }
+        setBuyImport({ fileName: file.name, parsed });
+      })
+      .catch((err) => {
+        console.error("Buy list import failed to read file:", err);
+        window.alert("Failed to read the buy list file.");
+      })
+      .finally(() => setIsLoading(false));
+  };
+
+  const handleConfirmBuyImport = async (type: BuyType, updates: BuyRowUpdate[]) => {
+    if (!buyImport || updates.length === 0) return;
+    const logs: AuditLog[] = updates.map((u) => ({
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toISOString(),
+      styleCode: `${String(u.row.col7 || "")} ${String(u.row.col6 || "")}`.trim(),
+      field: "Buy Type",
+      oldValue: u.oldLabel,
+      newValue: u.newLabel,
+      userRole: currentRole,
+    }));
+    setIsImportSyncing(true);
+    try {
+      await createBackup(`Before importing ${buyImport.fileName} (${type} buy)`, rows, "import");
+      await saveMultipleRows(updates.map((u) => u.updated));
+      await saveMultipleAuditLogs(logs);
+      setAuditLogs((prev) => [...logs, ...prev]);
+      setRows(await getAllRows(currentRole));
+      setBuyImport(null);
+    } catch (err) {
+      console.error("Buy list import save failed:", err);
+      window.alert("Failed to save the buy list.");
     } finally {
       setIsImportSyncing(false);
     }
@@ -5773,6 +5834,9 @@ export default function Home() {
 
     if (buyOnly && skip !== "buy") {
       result = result.filter(isOnBuyList);
+      if (buyTypeFilter !== "all") {
+        result = result.filter((row) => getBuyTypes(row).includes(buyTypeFilter));
+      }
     }
 
     // Apply Status Filter (Bypass in Advanced Mode so the Sidebar Filters can handle status)
@@ -5997,6 +6061,7 @@ export default function Home() {
     dhlFilter,
     colorFilter,
     buyOnly,
+    buyTypeFilter,
     slaFilter,
     searchQuery,
     currentRole,
@@ -6140,6 +6205,7 @@ export default function Home() {
         onImportPlanningSheet={handleImportPlanningSheet}
         onImportCkTrackingChart={handleImportCkTrackingChart}
         onImportDevPack={handleImportDevPack}
+        onImportBuyList={handleImportBuyList}
         onOpenAuditLogs={() => setIsAuditDrawerOpen(true)}
         auditLogsCount={auditLogs.length}
         currentRole={currentRole}
@@ -6501,6 +6567,8 @@ export default function Home() {
                     setColorFilter={setColorFilter}
                     buyOnly={buyOnly}
                     setBuyOnly={setBuyOnly}
+                    buyTypeFilter={buyTypeFilter}
+                    setBuyTypeFilter={setBuyTypeFilter}
                     buyRows={buyScopeRows}
                     selectedTeamFilter={selectedTeamFilter}
                     setSelectedTeamFilter={setSelectedTeamFilter}
@@ -6584,6 +6652,17 @@ export default function Home() {
         logs={auditLogs}
         onClearLogs={handleClearAuditLogs}
       />
+
+      {buyImport && (
+        <BuyImportModal
+          fileName={buyImport.fileName}
+          parsed={buyImport.parsed}
+          rows={rows}
+          isImporting={isImportSyncing}
+          onClose={() => setBuyImport(null)}
+          onConfirm={handleConfirmBuyImport}
+        />
+      )}
 
       {devPackImport && (
         <DevPackImportModal
