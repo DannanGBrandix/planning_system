@@ -5669,58 +5669,6 @@ export default function Home() {
     }
   };
 
-  const handleBulkPlanApproved = async () => {
-    if (rows.length === 0) return;
-
-    const approvedRows = rows.filter(r => (String(String(String(String(r.col20 || ''))))).toUpperCase() === 'APPROVED');
-    if (approvedRows.length === 0) {
-      alert("No approved graphics found.");
-      return;
-    }
-
-    let updatedCount = 0;
-    const updatedRows = rows.map((r) => {
-      if ((String(String(String(String(r.col20 || ""))))).toUpperCase() !== "APPROVED") return r;
-
-      let rowUpdated = false;
-      const newRow = { ...r };
-
-      Object.entries(newRow).forEach(([key, val]) => {
-        if (key.match(/^\d{4}-\d{2}-\d{2}$/) && typeof val === "string") {
-          const upperVal = val.toUpperCase();
-          if (upperVal.includes("REAP/FCHP") || upperVal.includes("MAST")) {
-            // Only update if it's not already passed or failed
-            if (!upperVal.includes("|P") && !upperVal.includes("|F")) {
-              const code = upperVal.includes("REAP/FCHP") ? "REAP/FCHP" : "MAST";
-              newRow[key] = `${code}|P`;
-              rowUpdated = true;
-            }
-          }
-        }
-      });
-
-      if (rowUpdated) {
-        updatedCount++;
-        return newRow;
-      }
-      return r;
-    });
-
-    if (updatedCount > 0) {
-      try {
-        const rowsToSave = updatedRows.filter((r, i) => r !== rows[i]);
-        await saveMultipleRows(rowsToSave);
-        setRows(updatedRows);
-        alert(`Successfully marked REAP/FCHP and MAST as Passed for ${updatedCount} approved graphics.`);
-      } catch (err) {
-        console.error("Failed to bulk plan approved items:", err);
-        alert("Failed to save bulk planned items.");
-      }
-    } else {
-      alert("No pending REAP/FCHP or MAST events found on approved graphics.");
-    }
-  };
-
   // Filter rows based on search bar query OR active plant tab for department portal.
   // skip: run every filter EXCEPT the Ground colour (or Plant) one — feeds that dropdown, so it
   // lists only the values present under the other active filters (and stays listable once one
@@ -6585,7 +6533,6 @@ export default function Home() {
                     onOpenConfig={() => setIsConfigOpen(true)}
                     onResetDatabase={handleResetDatabase}
                     currentRole={currentRole}
-                    onBulkPlanApproved={handleBulkPlanApproved}
                     />
                     </div>
                   </div>

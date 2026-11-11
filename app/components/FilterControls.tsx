@@ -51,7 +51,6 @@ interface FilterControlsProps {
   setSelectedStatusFilter?: (status: "All" | "Active" | "Dropped" | "Hold" | "Approved" | "C+P" | "Pending" | "Resubmit") => void;
   selectedPlanStatusFilter?: "All" | "Active" | "Dropped" | "Unplanned";
   setSelectedPlanStatusFilter?: (status: "All" | "Active" | "Dropped" | "Unplanned") => void;
-  onBulkPlanApproved?: () => void;
 }
 
 export default function FilterControls({
@@ -97,7 +96,6 @@ export default function FilterControls({
   setSelectedStatusFilter,
   selectedPlanStatusFilter,
   setSelectedPlanStatusFilter,
-  onBulkPlanApproved,
 }: FilterControlsProps) {
   const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -772,19 +770,6 @@ export default function FilterControls({
 
 
 
-
-        {selectedStatusFilter === "Approved" && onBulkPlanApproved && (
-          <button
-            onClick={onBulkPlanApproved}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all border border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/25 shadow-sm"
-            title="Automatically mark pending REAP/FCHP and MAST events as passed for all approved graphics"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-            Bulk Plan Approved
-          </button>
-        )}
 
         {hasActiveFilters && (
           <button
