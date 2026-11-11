@@ -1030,8 +1030,31 @@ export default function Table({
     setExportingTable(true);
     try {
       const [{ default: ExcelJS }, { saveAs }] = await Promise.all([import("exceljs"), import("file-saver")]);
+      // Export carries only the identity / technique / plant columns (col1–col13 + Risk Factor,
+      // Technique Category, Technique Type) — tracking, comment, approval, dev-pack etc. are left out
+      // on purpose — plus a PPS Date column read from the row's plan.
+      const EXPORT_KEYS = new Set([
+        "col1", "col2", "col3", "col4", "col5", "col6", "col7", "col8", "col9", "col10",
+        "col11", "col12", "col13", "col17", "col18", "col21",
+      ]);
       const keys = ["col1", "col5", "col7", ...sortedColKeys.filter((k) => k !== "col1" && k !== "col5" && k !== "col7")]
-        .filter((k) => columns[k]);
+        .filter((k) => columns[k] && EXPORT_KEYS.has(k));
+      // PPS date: latest PPS event on the plan (a moved / failed-and-replanned PPS keeps its newest date),
+      // per plant leg on cross-dev / two-plant rows ("<date>_<PLANT>" keys).
+      const ppsDates = (row: EmbellishmentRow): { date: string; leg: string }[] => {
+        const latest = new Map<string, string>();
+        for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+          const m = k.match(/^(\d{4}-\d{2}-\d{2})(?:_(.+))?$/);
+          if (!m || typeof v !== "string") continue;
+          const ev = parseEventValue(v);
+          if (!ev || ev.code.toUpperCase().replace(/-S$/, "") !== "PPS") continue;
+          const leg = (m[2] || "").toUpperCase();
+          if (!latest.has(leg) || latest.get(leg)! < m[1]) latest.set(leg, m[1]);
+        }
+        return [...latest].map(([leg, date]) => ({ leg, date })).sort((a, b) => a.date.localeCompare(b.date));
+      };
+      const isoToDate = (iso: string) => new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)));
+      const shortDate = (iso: string) => isoToDate(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit", timeZone: "UTC" }).replace(/ /g, "-");
       const cellText = (row: EmbellishmentRow, key: string): string => {
         if (key === "col1") return getDisplayStatus(row);
         if (key === "col48") return hasBuy(row) ? buyTypeLabel(getBuyTypes(row)) || "Has Buy" : "No Buy";
@@ -1045,11 +1068,10 @@ export default function Table({
 
       const wb = new ExcelJS.Workbook();
       const ws = wb.addWorksheet("Table");
-      ws.columns = keys.map((k) => ({
-        header: String(columns[k] || k).toUpperCase(),
-        key: k,
-        width: k === "col22" || k === "col24" ? 50 : 18,
-      }));
+      ws.columns = [
+        ...keys.map((k) => ({ header: String(columns[k] || k).toUpperCase(), key: k, width: 18 })),
+        { header: "PPS DATE", key: "ppsDate", width: 18 },
+      ];
       const head = ws.getRow(1);
       head.eachCell((c) => {
         c.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -1058,12 +1080,17 @@ export default function Table({
       });
       head.height = 32;
       filteredRows.forEach((row) => {
-        const rec: Record<string, string> = {};
+        const rec: Record<string, string | Date> = {};
         keys.forEach((k) => { rec[k] = cellText(row, k); });
+        const pps = ppsDates(row);
+        // One PPS -> a real Excel date; several plant legs -> "13-Nov-26 (ANTLER), 15-Nov-26 (LEEMA)".
+        rec.ppsDate = pps.length === 1 ? isoToDate(pps[0].date)
+          : pps.map((p) => `${shortDate(p.date)}${p.leg ? ` (${p.leg})` : ""}`).join(", ");
         const added = ws.addRow(rec);
         added.alignment = { vertical: "top", wrapText: true };
+        if (pps.length === 1) added.getCell("ppsDate").numFmt = "dd-mmm-yy";
       });
-      ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: keys.length } };
+      ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: keys.length + 1 } };
       ws.views = [{ state: "frozen", ySplit: 1, xSplit: 3 }];
 
       const d = new Date();
