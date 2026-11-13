@@ -9,6 +9,7 @@ import { withoutColorReplanEvents } from "../lib/colorApprovalReplan";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import PlantPlanRangeExport from "./PlantPlanRangeExport";
+import { buildSoTrackingLines, buildSoTrackingWorkbook } from "../lib/soTrackingChart";
 import {
   Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, Line, ComposedChart,
@@ -673,6 +674,34 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
     }
   };
 
+  // VS&Co "Graphic development tracking chart" (S/O tracking + RFT / on-time audit tabs) for the
+  // selected period: every VS/PINK strike-off whose first DHL date falls in the window, written into
+  // the planner's original workbook layout. See app/lib/soTrackingChart.ts for the column map.
+  const soTrackingCount = useMemo(
+    () => buildSoTrackingLines(rows, { ...effectiveWindow, season, category }).length,
+    [rows, effectiveWindow, season, category],
+  );
+  const exportSoTrackingChart = async () => {
+    setExporting(true);
+    try {
+      const lines = buildSoTrackingLines(rows, { ...effectiveWindow, season, category });
+      if (lines.length === 0) return; // button is disabled at 0 anyway
+      const [fy, fm] = effectiveWindow.from.split("-").map(Number);
+      const fiscalYear = periodMode === "quarter"
+        ? parseInt(year || "0", 10) || fy
+        : fm >= 4 ? fy : fy - 1;
+      const buf = await buildSoTrackingWorkbook(lines, fiscalYear);
+      const label = periodMode === "quarter"
+        ? `${fiscalYear} Q${quarter} (${fmtDay(effectiveWindow.from)}-${fmtDay(effectiveWindow.to)} ${effectiveWindow.to.slice(0, 4)})`
+        : `${effectiveWindow.from} to ${effectiveWindow.to}`;
+      saveAs(new Blob([buf], { type: XLSX_MIME }), `${label} Graphic development tracking chart.xlsx`);
+    } catch (err) {
+      console.error("S/O tracking chart export failed:", err);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const selectCls = "bg-zinc-900 border border-zinc-700 text-zinc-200 text-sm rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-amber-500/40";
 
   return (
@@ -778,6 +807,14 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
           title="Download a ZIP with a separate Excel file for each plant (its own score breakdown, failed graphics and graphics), using the current filters"
         >
           {exporting ? "Exporting…" : `Export by plant (${plantRows.length} files, ZIP)`}
+        </button>
+        <button
+          onClick={exportSoTrackingChart}
+          disabled={exporting || soTrackingCount === 0}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-amber-600 hover:bg-amber-500 disabled:opacity-50 rounded-xl transition-all shadow-md active:scale-[0.98]"
+          title="VS&Co Graphic development tracking chart (S/O tracking + audit tabs) for the selected month / quarter / date range — every VS/PINK strike-off whose DHL date falls in the period, honouring the Season / Category filters"
+        >
+          {exporting ? "Exporting…" : `Export S/O tracking chart (${soTrackingCount})`}
         </button>
         <PlantPlanRangeExport rows={rows} />
       </div>
