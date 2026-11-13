@@ -14,6 +14,9 @@ export interface ParsedImportItem {
   // import ran in "Only update existing rows" mode. Shown in the preview (so the planner can
   // see exactly what was left out) but never written.
   matchType: "tracking" | "style" | "new" | "unchanged" | "skipped";
+  // Set when a row is skipped for a reason other than update-only mode — e.g. the chart says
+  // it was shifted to another chart / vendor ("PLEASE SHIFT TO ICON SHOP CHART").
+  skipReason?: string;
   trackingNo?: string;
   styleCode?: string;
   graphic?: string;
@@ -82,6 +85,7 @@ export default function ImportPreviewModal({
     let newItems = 0;
     let unchangedMatches = 0;
     let skippedCount = 0;
+    let shiftedOutCount = 0;
     let dhlCount = 0;
     let droppedCount = 0;
     let strikeOffCount = 0;
@@ -90,7 +94,10 @@ export default function ImportPreviewModal({
       if (item.matchType === "tracking") trackingMatches++;
       else if (item.matchType === "style") styleMatches++;
       else if (item.matchType === "unchanged") unchangedMatches++;
-      else if (item.matchType === "skipped") skippedCount++;
+      else if (item.matchType === "skipped") {
+        skippedCount++;
+        if (item.skipReason) shiftedOutCount++;
+      }
       else newItems++;
 
       const r = item.mergedRow;
@@ -116,6 +123,7 @@ export default function ImportPreviewModal({
       styleMatches,
       unchangedMatches,
       skippedCount,
+      shiftedOutCount,
       writable: parsedItems.length - skippedCount,
       totalUpdates: trackingMatches + styleMatches,
       newItems,
@@ -283,7 +291,7 @@ export default function ImportPreviewModal({
 
           {summary.skippedCount > 0 && (
             <div className="bg-orange-50 dark:bg-orange-950/20 p-2.5 rounded-xl border border-orange-300/70 dark:border-orange-700/50 shadow-sm flex flex-col justify-between">
-              <span className="text-orange-700 dark:text-orange-400 font-medium leading-tight">Skipped (not in DB)</span>
+              <span className="text-orange-700 dark:text-orange-400 font-medium leading-tight">Skipped</span>
               <span className="text-lg font-black text-orange-600 dark:text-orange-400 mt-1 font-mono">
                 {summary.skippedCount}
               </span>
@@ -291,9 +299,16 @@ export default function ImportPreviewModal({
           )}
         </div>
 
-        {summary.skippedCount > 0 && (
+        {summary.shiftedOutCount > 0 && (
           <div className="mx-6 mt-3 px-3.5 py-2.5 rounded-lg bg-orange-50 dark:bg-orange-950/20 border border-orange-300/70 dark:border-orange-700/50 text-[11px] text-orange-800 dark:text-orange-300 leading-snug">
-            <strong>{summary.skippedCount} row{summary.skippedCount === 1 ? "" : "s"}</strong> in
+            <strong>{summary.shiftedOutCount} row{summary.shiftedOutCount === 1 ? "" : "s"}</strong> are
+            marked in the chart as shifted to another chart / vendor (e.g. &ldquo;PLEASE SHIFT TO ICON SHOP
+            CHART&rdquo;, &ldquo;MOVE TO HANSOLL&rdquo;) and were <strong>ignored</strong> — not created, not updated.
+          </div>
+        )}
+        {summary.skippedCount - summary.shiftedOutCount > 0 && (
+          <div className="mx-6 mt-3 px-3.5 py-2.5 rounded-lg bg-orange-50 dark:bg-orange-950/20 border border-orange-300/70 dark:border-orange-700/50 text-[11px] text-orange-800 dark:text-orange-300 leading-snug">
+            <strong>{summary.skippedCount - summary.shiftedOutCount} row{summary.skippedCount - summary.shiftedOutCount === 1 ? "" : "s"}</strong> in
             this file don&apos;t match any existing item and were <strong>not created</strong>{" "}
             because this import is running in <em>&ldquo;Only update existing rows&rdquo;</em> mode.
             See the <strong>Skipped</strong> tab for the list. To create them, re-import through
@@ -454,7 +469,7 @@ export default function ImportPreviewModal({
                               {item.matchType === "skipped" && (
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full bg-orange-500/10 text-orange-700 dark:text-orange-400 border border-orange-500/40">
                                   <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />
-                                  Not in DB — not created
+                                  {item.skipReason ? `Shifted out — ${item.skipReason}` : "Not in DB — not created"}
                                 </span>
                               )}
 

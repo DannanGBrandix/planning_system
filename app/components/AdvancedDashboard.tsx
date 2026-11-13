@@ -1664,7 +1664,7 @@ export default function AdvancedDashboard({
                     onClick: () => setApprovalGapModal("techBuyApproved"),
                   },
                   {
-                    label: "Regional · Missing",
+                    label: "Regional · Not Approved",
                     value: approvalGapLists.techBuyMissing.length,
                     total: buyTotal,
                     totalLabel: "with buy",
@@ -1682,7 +1682,7 @@ export default function AdvancedDashboard({
                     onClick: () => setApprovalGapModal("techBablApproved"),
                   },
                   {
-                    label: "BABL · Missing",
+                    label: "BABL · Not Approved",
                     value: approvalGapLists.techBablMissing.length,
                     total: bablTotal,
                     totalLabel: "with buy",
@@ -2082,11 +2082,11 @@ export default function AdvancedDashboard({
                   : approvalGapModal === "techBuyApproved"
                     ? "Regional Buy — Tech & Layout Approved"
                     : approvalGapModal === "techBuyMissing"
-                      ? "Regional Buy — Missing Tech & Layout Approval"
+                      ? "Regional Buy — Tech & Layout Not Approved"
                     : approvalGapModal === "techBablApproved"
                       ? "BABL Buy — Tech & Layout Approved"
                     : approvalGapModal === "techBablMissing"
-                      ? "BABL Buy — Missing Tech & Layout Approval"
+                      ? "BABL Buy — Tech & Layout Not Approved"
                   : approvalGapModal === "placementNeeded"
                 ? "Needs Placement Approval"
                 : approvalGapModal === "cp"

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { EmbellishmentRow, ColumnMapping, hasBuy, getBuyTypes, buyTypeLabel } from "../lib/db";
+import { EmbellishmentRow, ColumnMapping, hasBuy, getBuyTypes, buyTypeLabel, getRowStatus } from "../lib/db";
 import { parseDhlTrackingItems, getDisplayStatus } from "./Table";
 import { PLANNING_FLOWS, detectMatchingFlow, autoScheduleEmbellishmentRow } from "../lib/planningFlows";
 import { EVENT_CODES } from "../lib/eventCodes";
@@ -365,8 +365,23 @@ export default function RowDetailsModal({ isOpen, onClose, row, columns, onUpdat
                 </span>
                 {key === "col1" ? (
                   <select
-                    value={editForm?.[key] == null ? "Pending" : String(editForm[key])}
-                    onChange={(e) => setEditForm(prev => prev ? { ...prev, [key]: e.target.value } : null)}
+                    // A "RESUB…" in AOQ (col20) makes the row Resubmit Needed even when Status says
+                    // Active, so show the status the badge shows — picking Active / Pending then
+                    // also clears that RESUB text (Approved / Dropped already outrank it).
+                    value={
+                      editForm == null ? "Pending"
+                        : getRowStatus(editForm) === "resubmit" && !/^(approved|dropped)$/i.test(String(editForm[key] || "")) ? "Resubmit Needed"
+                        : editForm[key] == null ? "Pending" : String(editForm[key])
+                    }
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setEditForm(prev => {
+                        if (!prev) return null;
+                        const updated: EmbellishmentRow = { ...prev, [key]: next };
+                        if ((next === "Active" || next === "Pending") && /RESUB/i.test(String(prev.col20 || ""))) updated.col20 = "";
+                        return updated;
+                      });
+                    }}
                     className="w-full bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-sm font-semibold rounded-lg px-3 py-2.5 text-zinc-800 dark:text-zinc-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all shadow-sm cursor-pointer"
                   >
                     <option value="Active">Active</option>

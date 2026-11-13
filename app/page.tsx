@@ -4259,8 +4259,14 @@ export default function Home() {
             // fabric ref itself is still unioned on apply below, so neither number is lost.
             const isVsOrPinkCategory = (v: unknown): boolean =>
               /^(VS|PINK)/.test(String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, ""));
+            // EXCEPTION: a Technique Development sheet (Style column = "TECHNIQUE DEVELOPMENT", no
+            // real style number) lists the SAME Graphic + Combo once per fabric being trialled —
+            // e.g. "VV-15947 C1" on 12 fabrics (FB18059, FB18056, FB16359, ...). There each fabric
+            // IS a separate item, so Fabric Reference must stay in the identity even for VS/PINK;
+            // otherwise all 12 lines collapsed onto one row (232 lines -> 33 rows, 2026-11-12).
+            const fabricIsIdentity = /TECHNIQUE\s*DEV/i.test(incomingStyle);
             const fabricCompatible = (r: EmbellishmentRow) => {
-              if (isVsOrPinkCategory(incomingCategory) || isVsOrPinkCategory(r.col3)) return true;
+              if (!fabricIsIdentity && (isVsOrPinkCategory(incomingCategory) || isVsOrPinkCategory(r.col3))) return true;
               if (!incomingFabricNums.size) return true;
               const dbNums = fabricNumsOf(normalize(r.col13 || ""));
               if (!dbNums.size) return true;
@@ -4593,7 +4599,10 @@ export default function Home() {
             const compKeyGraphic = ckGraphicOnlyIdentity
               ? incomingGraphic
               : incomingGraphicNum || incomingGraphic;
-            const compKey = `${incomingStyle}|${incomingCombo}|${compKeyGraphic}|${incomingGround}|${incomingCategory}|${incomingSeason}|${incomingCategoryLine}`;
+            // Technique Development sheets: one line per trial fabric, so fabric joins the key
+            // (see fabricIsIdentity above) — otherwise the per-fabric lines fold into one new row.
+            const compKeyFabric = fabricIsIdentity ? [...incomingFabricNums].sort().join(",") : "";
+            const compKey = `${incomingStyle}|${incomingCombo}|${compKeyGraphic}|${incomingGround}|${incomingCategory}|${incomingSeason}|${incomingCategoryLine}|${compKeyFabric}`;
             if (!existingMatch && compKey && seenFileNewKeysMap.has(compKey)) {
               const reusableId = seenFileNewKeysMap.get(compKey)!;
               const dbRowMatch = rows.find(r => r.id === reusableId);
@@ -4606,6 +4615,27 @@ export default function Home() {
             // that's meant to establish new items). Nothing this file doesn't already match in
             // the database gets created; everything that DOES match still gets its blanks and
             // planning events filled in normally below.
+            // Transferred-out lines: the chart's "Strike off Aesthetic Approval / Dropped" column
+            // (col20) says the graphic belongs on ANOTHER chart / vendor — "PLEASE SHIFT TO ICON
+            // SHOP CHART", "PLEASE SHIFT TO SP27 CHART", "MOVE TO HANSOLL". It is not planned from
+            // this chart, so never create it and never touch a matched row from it (the chart it
+            // was shifted to owns it). Shown in the preview's Skipped bucket only. (U27 PINK
+            // APPAREL import 2026-11-13 created these as new graphics.)
+            const transferOutText = `${String(formattedRow["col20"] || "")} ${movedReallocatedCell}`;
+            if (/\bSHIFT(?:ED)?\s+TO\b|\bMOVE\s+TO\b|\bTRANSFER(?:RED)?\s+TO\b/i.test(transferOutText)) {
+              return {
+                mergedRow: {
+                  ...(formattedRow as EmbellishmentRow),
+                  id: `skip_${index}_${Math.random().toString(36).substr(2, 5)}`,
+                },
+                matchType: "skipped" as const,
+                skipReason: transferOutText.trim(),
+                styleCode: String(formattedRow["col5"] || "").trim(),
+                graphic: String(formattedRow["col7"] || "").trim(),
+                combo: String(formattedRow["col6"] || "").trim(),
+              };
+            }
+
             if (effectiveSkipNewRows && !matchedFromDb) {
               // Update-only mode: this row matches nothing in the database, so it won't be
               // created. Still surface it in the preview (as its own "Skipped" bucket) with
