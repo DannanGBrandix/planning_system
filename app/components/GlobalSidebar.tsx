@@ -5,10 +5,10 @@ interface GlobalSidebarProps {
   setViewMode: (mode: "standard" | "advanced" | "actionCenter" | "plantSchedules" | "scoreCard" | "plantPerformance" | "fabricDispatch" | "triggers" | "reports" | "summaryOfGraphics") => void;
   onImportJSON: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportExcel: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onImportPlanningSheet: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportCkTrackingChart: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportDevPack: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImportBuyList: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onImportDra: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onOpenAuditLogs: () => void;
   auditLogsCount: number;
   currentRole?: string;
@@ -22,10 +22,10 @@ export default function GlobalSidebar({
   setViewMode,
   onImportJSON,
   onImportExcel,
-  onImportPlanningSheet,
   onImportCkTrackingChart,
   onImportDevPack,
   onImportBuyList,
+  onImportDra,
   onOpenAuditLogs,
   auditLogsCount,
   currentRole,
@@ -221,29 +221,6 @@ export default function GlobalSidebar({
                 <input
                   type="file"
                   accept=".xlsx, .xls, .xlsm, .csv"
-                  onChange={onImportPlanningSheet}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  title="Import Planning Sheet"
-                />
-                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex items-center justify-between group-hover/btn:border-amber-500/50 transition-colors">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 shrink-0 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                      </svg>
-                    </div>
-                    <div className="flex flex-col text-left opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
-                      <span className="text-zinc-200 text-xs font-bold">Import Planning Sheet</span>
-                      <span className="text-zinc-500 text-[10px]">Fill dates on existing items only</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="relative overflow-hidden group/btn">
-                <input
-                  type="file"
-                  accept=".xlsx, .xls, .xlsm, .csv"
                   onChange={onImportCkTrackingChart}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                   title="Import CK Tracking Chart"
@@ -281,6 +258,29 @@ export default function GlobalSidebar({
                     <div className="flex flex-col text-left opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
                       <span className="text-zinc-200 text-xs font-bold">Import Buy Graphics</span>
                       <span className="text-zinc-500 text-[10px]">Regional or BABL buy list</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="relative overflow-hidden group/btn">
+                <input
+                  type="file"
+                  accept=".xlsx, .xls, .xlsm"
+                  onChange={onImportDra}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                  title="Import DRA (Development Risk Assessment)"
+                />
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-3 flex items-center justify-between group-hover/btn:border-amber-500/50 transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 shrink-0 rounded-lg bg-red-500/10 text-red-400 flex items-center justify-center">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                      </svg>
+                    </div>
+                    <div className="flex flex-col text-left opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
+                      <span className="text-zinc-200 text-xs font-bold">Import DRA</span>
+                      <span className="text-zinc-500 text-[10px]">Risk + What / Who / When</span>
                     </div>
                   </div>
                 </div>

@@ -15,6 +15,7 @@ import {
   Tooltip,
 } from "recharts";
 import { FilterSelections } from "./AdvancedSidebarFilters";
+import DraActionPanel from "./DraActionPanel";
 import { extractValidDate, formatDateDDMMYYYY } from "../lib/triggerUtils";
 import { extractPlants, plantFromFlow } from "../lib/plantUtils";
 
@@ -727,6 +728,8 @@ export default function AdvancedDashboard({
   // "high" narrows both to High Risk items only, so you see the high-risk techniques and exactly
   // which plants are running them.
   const [techRiskFilter, setTechRiskFilter] = useState<"all" | "high" | "low">("all");
+  // Technique group clicked in the chart — narrows the DRA action list below to it.
+  const [draTechnique, setDraTechnique] = useState<string | null>(null);
   const riskBucketOf = (r: EmbellishmentRow): "high" | "low" | "unrated" => {
     const raw = String(r.col17 || "").trim().toUpperCase();
     return raw.includes("HIGH") ? "high" : raw.includes("LOW") ? "low" : "unrated";
@@ -1797,6 +1800,13 @@ export default function AdvancedDashboard({
                 data={techniqueChartData}
                 margin={{ top: 0, right: 20, left: 0, bottom: 0 }}
                 barCategoryGap="30%"
+                onClick={(state) => {
+                  // The axis label is truncated and carries the count ("1. PRINT (7)") — use the
+                  // clicked entry's full technique name instead.
+                  const entry = techniqueChartData[Number(state?.activeIndex)];
+                  if (entry) setDraTechnique(entry.fullTechnique);
+                }}
+                style={{ cursor: "pointer" }}
               >
                 <XAxis type="number" stroke="#666" fontSize={10} allowDecimals={false} />
                 <YAxis
@@ -1912,6 +1922,14 @@ export default function AdvancedDashboard({
           </div>
         )}
       </div>
+
+      {/* DRA ACTIONS — What / Who / When from the DRA import */}
+      <DraActionPanel
+        rows={rows}
+        risk={techRiskFilter}
+        technique={draTechnique && techniqueChartData.some((t) => t.fullTechnique === draTechnique) ? draTechnique : null}
+        onTechniqueChange={setDraTechnique}
+      />
         </>
       )}
 

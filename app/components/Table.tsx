@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useSyncExternalStore } from "react";
 
 // Format a Date as a local YYYY-MM-DD string (never via toISOString, which shifts to UTC
 // and can roll the date back a day for timezones west of UTC).
@@ -1022,6 +1022,74 @@ export default function Table({
     return keys;
   }, [columns]);
 
+  // Column picker ("Columns" button): which data columns the grid shows. Status / Style / Graphic
+  // are frozen and always shown. Saved per browser. Dev Pack (col52-col63) and DRA (col80-col87)
+  // start hidden — they're for their own screens and pushed the planning dates far to the right.
+  // Export Table is not affected.
+  const DEFAULT_HIDDEN_COLS = React.useMemo(() => {
+    const hide = new Set<string>();
+    Object.keys(columns).forEach((k) => {
+      const n = Number(k.replace("col", ""));
+      if ((n >= 52 && n <= 63) || (n >= 80 && n <= 87)) hide.add(k);
+    });
+    return hide;
+  }, [columns]);
+  // The saved choice is read through useSyncExternalStore (null on the server) so the first
+  // client render can't mismatch the server HTML; a pick made this session overrides it.
+  const savedHiddenRaw = useSyncExternalStore(
+    (cb) => {
+      window.addEventListener("storage", cb);
+      return () => window.removeEventListener("storage", cb);
+    },
+    () => {
+      try {
+        return window.localStorage.getItem("dashboardTable.hiddenCols");
+      } catch {
+        return null; // storage blocked — fall back to the defaults
+      }
+    },
+    () => null,
+  );
+  const [hiddenCols, setHiddenCols] = useState<Set<string> | null>(null);
+  const effectiveHidden = React.useMemo(() => {
+    if (hiddenCols) return hiddenCols;
+    if (savedHiddenRaw) {
+      try {
+        return new Set(JSON.parse(savedHiddenRaw) as string[]);
+      } catch {
+        /* corrupt value — use the defaults */
+      }
+    }
+    return DEFAULT_HIDDEN_COLS;
+  }, [hiddenCols, savedHiddenRaw, DEFAULT_HIDDEN_COLS]);
+  const saveHidden = (next: Set<string>) => {
+    setHiddenCols(next);
+    try {
+      window.localStorage.setItem("dashboardTable.hiddenCols", JSON.stringify([...next]));
+    } catch {
+      /* storage blocked — the choice just won't survive a reload */
+    }
+  };
+  const toggleCol = (k: string) => {
+    const next = new Set(effectiveHidden);
+    if (next.has(k)) next.delete(k);
+    else next.add(k);
+    saveHidden(next);
+  };
+  const pickableColKeys = sortedColKeys.filter((key) => key !== "col1" && key !== "col5" && key !== "col7");
+  const visibleColKeys = pickableColKeys.filter((key) => !effectiveHidden.has(key));
+  const [colPickerOpen, setColPickerOpen] = useState(false);
+  const [colPickerSearch, setColPickerSearch] = useState("");
+  const colPickerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!colPickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (colPickerRef.current && !colPickerRef.current.contains(e.target as Node)) setColPickerOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [colPickerOpen]);
+
   // Export exactly what the table is showing: every row that passes the current filters/search
   // (all pages, not just this page), in the on-screen sort order and column order.
   const [exportingTable, setExportingTable] = useState(false);
@@ -1239,6 +1307,48 @@ export default function Table({
             <span>rows</span>
           </div>
 
+          <div className="relative" ref={colPickerRef}>
+            <button
+              type="button"
+              onClick={() => { setColPickerOpen((o) => !o); setColPickerSearch(""); }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-100 bg-slate-700 hover:bg-slate-600 rounded-xl transition-all shadow-md"
+              title="Choose which columns the table shows (planning dates stay on the right)"
+            >
+              Columns ({visibleColKeys.length}/{pickableColKeys.length})
+            </button>
+            {colPickerOpen && (
+              <div className="absolute right-0 mt-1.5 w-72 bg-[#0f172a] border border-slate-700 rounded-xl shadow-2xl z-50 text-xs">
+                <div className="p-2 border-b border-slate-700 space-y-2">
+                  <input
+                    autoFocus
+                    value={colPickerSearch}
+                    onChange={(e) => setColPickerSearch(e.target.value)}
+                    placeholder="Search columns…"
+                    className="w-full px-2.5 py-1.5 bg-[#0b0f19] border border-slate-700 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                  />
+                  <div className="flex gap-1.5">
+                    <button type="button" onClick={() => saveHidden(new Set())}
+                      className="flex-1 px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold">Show all</button>
+                    <button type="button" onClick={() => saveHidden(new Set(pickableColKeys))}
+                      className="flex-1 px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold">Hide all</button>
+                    <button type="button" onClick={() => saveHidden(new Set(DEFAULT_HIDDEN_COLS))}
+                      className="flex-1 px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-semibold">Default</button>
+                  </div>
+                </div>
+                <div className="max-h-80 overflow-y-auto py-1">
+                  {pickableColKeys
+                    .filter((k) => !colPickerSearch.trim() || String(columns[k] || k).toLowerCase().includes(colPickerSearch.trim().toLowerCase()))
+                    .map((k) => (
+                      <label key={k} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-800 cursor-pointer text-slate-200">
+                        <input type="checkbox" checked={!effectiveHidden.has(k)} onChange={() => toggleCol(k)} className="accent-blue-500" />
+                        <span className="truncate">{columns[k] || k}</span>
+                      </label>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+
           <button
             onClick={exportTableExcel}
             disabled={exportingTable || filteredRows.length === 0}
@@ -1342,8 +1452,7 @@ export default function Table({
               )}
 
               {/* Dynamic Headers (excluding frozen col1, col5, col7) */}
-              {sortedColKeys
-                .filter((key) => key !== "col1" && key !== "col5" && key !== "col7")
+              {visibleColKeys
                 .map((key) => (
                   <th
                     key={key}
@@ -1415,7 +1524,7 @@ export default function Table({
             {paginatedRows.length === 0 ? (
               <tr>
                 <td 
-                  colSpan={sortedColKeys.length + 2} 
+                  colSpan={visibleColKeys.length + 5} 
                   className="p-12 text-center text-slate-400"
                 >
                   <div className="flex flex-col items-center justify-center gap-2">
@@ -1659,8 +1768,7 @@ export default function Table({
                     )}
 
                   {/* Dynamic Columns (excluding frozen col1, col5, col7) */}
-                  {sortedColKeys
-                    .filter((key) => key !== "col1" && key !== "col5" && key !== "col7")
+                  {visibleColKeys
                     .map((key) => {
                       const isEditing = editingCell?.rowId === row.id && editingCell?.colKey === key;
                       const value = String(row[key] ?? "");

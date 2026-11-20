@@ -70,6 +70,9 @@ import DevPackImportModal, { DevPackPreviewEntry } from "./components/DevPackImp
 import { parseDevPackWorkbook, matchDevPackRow, applyDevPackItem } from "./lib/devPackImport";
 import { parseBuyWorkbook, ParsedBuyFile, BuyRowUpdate } from "./lib/buyImport";
 import BuyImportModal from "./components/BuyImportModal";
+import { parseDraWorkbook, ParsedDraFile, DraRowUpdate } from "./lib/draImport";
+import DraImportModal from "./components/DraImportModal";
+import { DRA_COLUMNS, DRA_ACTION_LABELS, draActionStatus, riskBucket } from "./lib/draImport";
 import CkSyncButton from "./components/CkSyncButton";
 import ActionCenterView from "./components/ActionCenterView";
 import GlobalSidebar from "./components/GlobalSidebar";
@@ -232,6 +235,8 @@ export default function Home() {
       trigger: [],
       technique: [],
       riskFactor: [],
+      draRiskCategory: [],
+      draAction: [],
       style: [],
       ground: [],
       comment: [],
@@ -280,6 +285,8 @@ export default function Home() {
   const [advancedDevMode, setAdvancedDevMode] = useState<boolean>(false);
   // "Import Buy Graphics" (own parser/preview — see lib/buyImport.ts).
   const [buyImport, setBuyImport] = useState<{ fileName: string; parsed: ParsedBuyFile } | null>(null);
+  // "Import DRA" — Development Risk Assessment workbook (see lib/draImport.ts).
+  const [draImport, setDraImport] = useState<{ fileName: string; parsed: ParsedDraFile } | null>(null);
   // HO27 Dev Pack Tracker import (own parser/preview — see lib/devPackImport.ts).
   const [devPackImport, setDevPackImport] = useState<{
     fileName: string;
@@ -2391,6 +2398,60 @@ export default function Home() {
         window.alert("Failed to read the buy list file.");
       })
       .finally(() => setIsLoading(false));
+  };
+
+  const handleImportDra = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (isImportSyncingRef.current) {
+      window.alert("An import is still being saved to the database. Please wait for it to finish before starting another import.");
+      return;
+    }
+    setIsLoading(true);
+    file
+      .arrayBuffer()
+      .then((buffer) => {
+        const parsed = parseDraWorkbook(XLSX.read(buffer, { type: "array", codepage: 65001, cellDates: true }));
+        if (parsed.lines.length === 0) {
+          window.alert(`No DRA lines found in ${file.name}. It needs a "Data" sheet with Graphic and Risk columns.`);
+          return;
+        }
+        setDraImport({ fileName: file.name, parsed });
+      })
+      .catch((err) => {
+        console.error("DRA import failed to read file:", err);
+        window.alert("Failed to read the DRA file.");
+      })
+      .finally(() => setIsLoading(false));
+  };
+
+  const handleConfirmDraImport = async (updates: DraRowUpdate[]) => {
+    if (!draImport || updates.length === 0) return;
+    // One audit line per row (a field-per-line log would be thousands of entries per import).
+    const logs: AuditLog[] = updates.map((u) => ({
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toISOString(),
+      styleCode: `${String(u.row.col7 || "")} ${String(u.row.col6 || "")}`.trim(),
+      field: "DRA import",
+      oldValue: u.changes.map((c) => `${c.field}: ${c.oldValue || "-"}`).join(" | ").slice(0, 500),
+      newValue: u.changes.map((c) => `${c.field}: ${c.newValue || "-"}`).join(" | ").slice(0, 500),
+      userRole: currentRole,
+    }));
+    setIsImportSyncing(true);
+    try {
+      await createBackup(`Before importing ${draImport.fileName} (DRA)`, rows, "import");
+      await saveMultipleRows(updates.map((u) => u.updated));
+      await saveMultipleAuditLogs(logs);
+      setAuditLogs((prev) => [...logs, ...prev]);
+      setRows(await getAllRows(currentRole));
+      setDraImport(null);
+    } catch (err) {
+      console.error("DRA import save failed:", err);
+      window.alert("Failed to save the DRA import.");
+    } finally {
+      setIsImportSyncing(false);
+    }
   };
 
   const handleConfirmBuyImport = async (type: BuyType, updates: BuyRowUpdate[]) => {
@@ -5920,10 +5981,18 @@ export default function Home() {
               (String(String(String(String(r.col9 || ""))))).includes(tc),
             ),
         );
+      // Risk Factor options are buckets (High / Low / Unrated) — col17 holds many spellings.
       if (advancedSelections.riskFactor.length > 0)
-        result = result.filter(
-          (r) => r.col17 && advancedSelections.riskFactor.includes(String(r.col17)),
+        result = result.filter((r) => advancedSelections.riskFactor.includes(riskBucket(r)));
+      if (advancedSelections.draRiskCategory.length > 0)
+        result = result.filter((r) =>
+          advancedSelections.draRiskCategory.includes(String(r[DRA_COLUMNS.riskCategory] ?? "").trim()),
         );
+      if (advancedSelections.draAction.length > 0)
+        result = result.filter((r) => {
+          const s = draActionStatus(r);
+          return s !== "none" && advancedSelections.draAction.includes(DRA_ACTION_LABELS[s]);
+        });
       if (advancedSelections.style.length > 0)
         result = result.filter(
           (r) => r.col5 && advancedSelections.style.includes(String(r.col5)),
@@ -6143,10 +6212,10 @@ export default function Home() {
         setViewMode={setViewMode}
         onImportJSON={handleImportJSON}
         onImportExcel={handleImportExcel}
-        onImportPlanningSheet={handleImportPlanningSheet}
         onImportCkTrackingChart={handleImportCkTrackingChart}
         onImportDevPack={handleImportDevPack}
         onImportBuyList={handleImportBuyList}
+        onImportDra={handleImportDra}
         onOpenAuditLogs={() => setIsAuditDrawerOpen(true)}
         auditLogsCount={auditLogs.length}
         currentRole={currentRole}
@@ -6399,6 +6468,17 @@ export default function Home() {
         logs={auditLogs}
         onClearLogs={handleClearAuditLogs}
       />
+
+      {draImport && (
+        <DraImportModal
+          fileName={draImport.fileName}
+          parsed={draImport.parsed}
+          rows={rows}
+          isImporting={isImportSyncing}
+          onClose={() => setDraImport(null)}
+          onConfirm={handleConfirmDraImport}
+        />
+      )}
 
       {buyImport && (
         <BuyImportModal

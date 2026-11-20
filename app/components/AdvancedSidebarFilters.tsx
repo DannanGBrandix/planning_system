@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { EmbellishmentRow, getRowStatus, cleanCategory } from "../lib/db";
+import { DRA_COLUMNS, DRA_ACTION_LABELS, draActionStatus, riskBucket } from "../lib/draImport";
 import { ChevronDown, Check, FilterX } from "lucide-react";
 
 export type FilterSelections = {
@@ -10,7 +11,9 @@ export type FilterSelections = {
   graphicType: string[];
   trigger: string[];
   technique: string[];
-  riskFactor: string[];
+  riskFactor: string[]; // "High" / "Low" / "Unrated" (riskBucket — col17 has many spellings)
+  draRiskCategory: string[]; // DRA Risk Category (col80): Placement / Technique
+  draAction: string[]; // DRA action status label (DRA_ACTION_LABELS)
   style: string[];
   ground: string[];
   comment: string[];
@@ -217,7 +220,9 @@ export default function AdvancedSidebarFilters({
       graphicType: new Set<string>(),    // col19
       trigger: new Set<string>(),        // col2
       technique: new Set<string>(),      // col9
-      riskFactor: new Set<string>(),     // col17
+      riskFactor: new Set<string>(),     // col17, bucketed
+      draRiskCategory: new Set<string>(), // col80
+      draAction: new Set<string>(),       // DRA What / When status
       style: new Set<string>(),          // col5
       ground: new Set<string>(),         // col8
       comment: new Set<string>(),        // col22
@@ -272,7 +277,11 @@ export default function AdvancedSidebarFilters({
         if (r.col19) opts.graphicType.add(String(String(String(String(r.col19 || "")))).replace(/[\r\n]+/g, " ").trim());
         if (r.col2) opts.trigger.add(String(String(String(String(r.col2 || "")))).replace(/[\r\n]+/g, " ").trim());
         if (r.col9) opts.technique.add(String(String(String(String(r.col9 || "")))).replace(/[\r\n]+/g, " ").trim());
-        if (r.col17) opts.riskFactor.add(String(String(String(String(r.col17 || "")))).replace(/[\r\n]+/g, " ").trim());
+        opts.riskFactor.add(riskBucket(r));
+        const draCat = String(r[DRA_COLUMNS.riskCategory] ?? "").trim();
+        if (draCat) opts.draRiskCategory.add(draCat);
+        const action = draActionStatus(r);
+        if (action !== "none") opts.draAction.add(DRA_ACTION_LABELS[action]);
         if (r.col5) opts.style.add(String(String(String(String(r.col5 || "")))).trim());
         if (r.col8) opts.ground.add(String(String(String(String(r.col8 || "")))).replace(/[\r\n]+/g, " ").trim());
         if (r.col22) opts.comment.add(String(String(String(String(r.col22 || "")))).replace(/[\r\n]+/g, " ").trim());
@@ -301,7 +310,9 @@ export default function AdvancedSidebarFilters({
       graphicType: Array.from(opts.graphicType).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })),
       trigger: Array.from(opts.trigger).sort(),
       technique: Array.from(opts.technique).sort(),
-      riskFactor: Array.from(opts.riskFactor).sort(),
+      riskFactor: ["High", "Low", "Unrated"].filter((v) => opts.riskFactor.has(v)),
+      draRiskCategory: Array.from(opts.draRiskCategory).sort(),
+      draAction: (["overdue", "dueSoon", "open", "done"] as const).map((k) => DRA_ACTION_LABELS[k]).filter((v) => opts.draAction.has(v)),
       style: Array.from(opts.style).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })),
       ground: Array.from(opts.ground).sort(),
       comment: Array.from(opts.comment).sort(),
@@ -342,6 +353,8 @@ export default function AdvancedSidebarFilters({
       trigger: [],
       technique: [],
       riskFactor: [],
+      draRiskCategory: [],
+      draAction: [],
       style: [],
       ground: [],
       comment: [],
@@ -404,6 +417,11 @@ export default function AdvancedSidebarFilters({
       <FilterDropdown title="Trigger" filterKey="trigger" options={filterOptions.trigger} selected={selections.trigger} onSelectAll={handleSelectAll} onToggle={handleToggle} />
       <FilterDropdown title="Technique" filterKey="technique" options={filterOptions.technique} selected={selections.technique} onSelectAll={handleSelectAll} onToggle={handleToggle} />
       <FilterDropdown title="Risk Factor" filterKey="riskFactor" options={filterOptions.riskFactor} selected={selections.riskFactor} onSelectAll={handleSelectAll} onToggle={handleToggle} />
+
+      {/* DRA (Development Risk Assessment) — filled by the sidebar "Import DRA" button */}
+      <div className="text-[9px] text-zinc-600 uppercase font-bold tracking-widest mb-2 mt-3">DRA</div>
+      <FilterDropdown title="DRA Risk Category" filterKey="draRiskCategory" options={filterOptions.draRiskCategory} selected={selections.draRiskCategory} onSelectAll={handleSelectAll} onToggle={handleToggle} />
+      <FilterDropdown title="DRA Action" filterKey="draAction" options={filterOptions.draAction} selected={selections.draAction} onSelectAll={handleSelectAll} onToggle={handleToggle} />
 
       <button 
         onClick={clearAllFilters}

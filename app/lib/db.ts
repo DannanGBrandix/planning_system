@@ -728,6 +728,16 @@ export const DEFAULT_COLUMNS: ColumnMapping = {
   col54: "Dev Pack Cost",
   col55: "Dev Pack Ready Date",
   col56: "Dev Pack Pass Off Date",
+  // DRA (Development Risk Assessment) import — lib/draImport.ts, 2026-11-20. col80+ is clear of
+  // the slots earlier imports minted for unknown headers (col64-col72). JSONB like col34+.
+  col80: "DRA Risk Category",
+  col81: "DRA What",
+  col82: "DRA Who",
+  col83: "DRA When",
+  col84: "DRA Comment",
+  col85: "DRA Date",
+  col86: "DRA Weekly",
+  col87: "DRA 3W Review",
   col57: "Dev Pack Reviewed w/ Graphics Team",
   col58: "Dev Pack Size",
   col59: "Dev Pack Per Day Output",
