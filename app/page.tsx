@@ -74,7 +74,6 @@ import CkSyncButton from "./components/CkSyncButton";
 import ActionCenterView from "./components/ActionCenterView";
 import GlobalSidebar from "./components/GlobalSidebar";
 import PlantSchedulesView from "./components/PlantSchedulesView";
-import ScoreCardDashboard from "./components/ScoreCardDashboard";
 import PlantPerformanceView from "./components/PlantPerformanceView";
 import NewVersionModal, { NewVersionInput } from "./components/NewVersionModal";
 import FabricDispatchView from "./components/FabricDispatchView";
@@ -6191,9 +6190,7 @@ export default function Home() {
                       ? "Reports"
                       : viewMode === "summaryOfGraphics"
                         ? "TNA Report"
-                        : viewMode === "scoreCard"
-                          ? "Score Card"
-                          : viewMode === "plantPerformance"
+                        : viewMode === "plantPerformance"
                             ? "Plant Performance"
                             : viewMode === "plantSchedules"
                             ? "Plant Schedules"
@@ -6212,9 +6209,7 @@ export default function Home() {
                       ? "Export approval reports by Season and Category."
                       : viewMode === "summaryOfGraphics"
                         ? "AWR, S/Off, Approved, and Dropped dates by Category and Season — exportable to Excel."
-                        : viewMode === "scoreCard"
-                          ? "AOQ-approval performance by plant — click a plant to merge, hide, or see its graphics."
-                          : viewMode === "plantPerformance"
+                        : viewMode === "plantPerformance"
                             ? "Monthly PPS performance by plant — green PPS earns points, red PPS loses them."
                             : viewMode === "plantSchedules"
                             ? "Per-plant calendar of upcoming planning events."
@@ -6230,8 +6225,6 @@ export default function Home() {
               onUpdateRow={handleUpdateRow}
               currentRole={currentRole}
             />
-          ) : viewMode === "scoreCard" ? (
-            <ScoreCardDashboard rows={allCurrentVersionRows} onUpdateRow={handleUpdateRow} currentRole={currentRole} />
           ) : viewMode === "plantPerformance" ? (
             <PlantPerformanceView rows={allCurrentVersionRows} archivedRows={archivedRows} />
           ) : viewMode === "plantSchedules" ? (
