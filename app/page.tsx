@@ -54,7 +54,7 @@ import {
 import Table from "./components/Table";
 import ColumnConfigModal from "./components/ColumnConfigModal";
 import Header from "./components/Header";
-import FilterControls from "./components/FilterControls";
+import FilterControls, { fabricRefTokens } from "./components/FilterControls";
 import DashboardStats from "./components/DashboardStats";
 import ManagementView from "./components/ManagementView";
 import AuditTrailDrawer from "./components/AuditTrailDrawer";
@@ -145,7 +145,7 @@ type StatusFilterValue = "All" | "Active" | "Dropped" | "Hold" | "Approved" | "C
 type PlanStatusFilterValue = "All" | "Active" | "Dropped" | "Unplanned";
 // Which dashboard dropdown a filter pass leaves out, so that dropdown can list (and count) only
 // the values present under every OTHER active filter. null = apply everything.
-type FilterSkip = "ground" | "plant" | "trigger" | "category" | "season" | "status" | "planStatus" | "dhl" | "color" | "buy" | null;
+type FilterSkip = "ground" | "fabricRef" | "plant" | "trigger" | "category" | "season" | "status" | "planStatus" | "dhl" | "color" | "buy" | null;
 
 // The Status dropdown's filter on its own, shared by the filter pass and the dropdown's counts.
 function filterRowsByStatus(result: EmbellishmentRow[], status: StatusFilterValue): EmbellishmentRow[] {
@@ -210,6 +210,8 @@ export default function Home() {
   const [selectedPlantFilter, setSelectedPlantFilter] = useState<string>("");
   // Ground colour (col8) filter — stored upper-cased so "Dress Blues" / "DRESS BLUES" match alike.
   const [selectedGroundFilter, setSelectedGroundFilter] = useState<string>("");
+  // Fabric Reference (col13) filter — a normalised ref key from fabricRefTokens ("FB22142").
+  const [selectedFabricRefFilter, setSelectedFabricRefFilter] = useState<string>("");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<"All" | "Active" | "Dropped" | "Hold" | "Approved" | "C+P" | "Pending" | "Resubmit">("Active");
   // Plan Status (col47) filter — the planning-lifecycle flag, independent of the S/off Status
   // filter above and of anything Advanced Analytics reads.
@@ -5765,6 +5767,14 @@ export default function Home() {
       );
     }
 
+    // Apply Fabric Reference Dropdown Filter (standard dashboard only) — a row matches when any of
+    // the refs in its col13 cell normalises to the picked key.
+    if (selectedFabricRefFilter && viewMode !== "advanced" && skip !== "fabricRef") {
+      result = result.filter((row) =>
+        fabricRefTokens(row.col13).some(([key]) => key === selectedFabricRefFilter),
+      );
+    }
+
     // Event-capsule triggers (Super Bowl, …) are hidden from EVERY default view — they're
     // planned/reported on their own, so a plain Category + Season view (standard or advanced)
     // must not fold them in on top of the regular seasonal flow. They reappear the moment their
@@ -6036,6 +6046,7 @@ export default function Home() {
     selectedTriggerFilter,
     selectedPlantFilter,
     selectedGroundFilter,
+    selectedFabricRefFilter,
     dhlFilter,
     colorFilter,
     buyOnly,
@@ -6051,6 +6062,7 @@ export default function Home() {
 
   const displayedRows = useMemo(() => applyRowFilters(null), [applyRowFilters]);
   const groundScopeRows = useMemo(() => applyRowFilters("ground"), [applyRowFilters]);
+  const fabricRefScopeRows = useMemo(() => applyRowFilters("fabricRef"), [applyRowFilters]);
   const plantScopeRows = useMemo(() => applyRowFilters("plant"), [applyRowFilters]);
   const triggerScopeRows = useMemo(() => applyRowFilters("trigger"), [applyRowFilters]);
   const categoryScopeRows = useMemo(() => applyRowFilters("category"), [applyRowFilters]);
@@ -6535,6 +6547,8 @@ export default function Home() {
                     setSelectedPlantFilter={setSelectedPlantFilter}
                     selectedGroundFilter={selectedGroundFilter}
                     setSelectedGroundFilter={setSelectedGroundFilter}
+                    selectedFabricRefFilter={selectedFabricRefFilter}
+                    setSelectedFabricRefFilter={setSelectedFabricRefFilter}
                     selectedStatusFilter={selectedStatusFilter}
                     setSelectedStatusFilter={setSelectedStatusFilter}
                     selectedPlanStatusFilter={selectedPlanStatusFilter}
@@ -6552,6 +6566,7 @@ export default function Home() {
                     setSelectedTeamFilter={setSelectedTeamFilter}
                     rows={rows}
                     groundRows={groundScopeRows}
+                    fabricRefRows={fabricRefScopeRows}
                     plantRows={plantScopeRows}
                     triggerRows={triggerScopeRows}
                     categoryRows={categoryScopeRows}

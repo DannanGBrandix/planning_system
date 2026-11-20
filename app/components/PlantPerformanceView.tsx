@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { EmbellishmentRow, getRowStatus, getPlantAliasConfig, getSeasonAoqConfig, SeasonAoqMap, getTriggerCatalog, TriggerCatalogEntry } from "../lib/db";
 import { parseEventValue, getReasonByCode } from "../lib/eventCodes";
 import { applyPlantAliasConfig, getPlantAliasRuntimeConfig, resolvePlantDateTargets, extractPlants, splitLegPlants } from "../lib/plantUtils";
@@ -96,7 +96,20 @@ function fmtDay(iso: string): string {
 
 export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantPerformanceViewProps) {
   const [yearPick, setYearPick] = useState<string>(""); // "" = newest year with PPS data
-  const [month, setMonth] = useState<string>("all"); // "all" | "01".."12"
+  // Month mode: any set of months of the selected year ("01".."12", kept sorted). Empty = all months.
+  const [months, setMonths] = useState<string[]>([]);
+  const toggleMonth = (m: string) =>
+    setMonths((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m].sort()));
+  const [monthMenuOpen, setMonthMenuOpen] = useState(false);
+  const monthMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!monthMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (monthMenuRef.current && !monthMenuRef.current.contains(e.target as Node)) setMonthMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [monthMenuOpen]);
   const [season, setSeason] = useState<string>("all");
   const [category, setCategory] = useState<string>("all");
   const [passPts, setPassPts] = useState(1);
@@ -313,21 +326,30 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
   // the original behavior: the whole selected calendar year, or one month of it. "quarter" is a
   // fiscal quarter starting April, resolved independent of the year grid so Q4 (Jan–Mar) still
   // works when it wraps into the next calendar year. "range" is a literal FROM/TO pick.
-  const effectiveWindow = useMemo((): { from: string; to: string } => {
+  // Month mode with several months picked can be non-contiguous (e.g. Sep + Nov), so the period is a
+  // list of windows; a date is in the period when it falls in ANY of them. effectiveWindow is the
+  // overall span (first window's start .. last window's end) for labels and file names.
+  const periodWindows = useMemo((): { from: string; to: string }[] => {
     const fyYear = parseInt(year || "0", 10) || new Date().getFullYear();
-    if (periodMode === "quarter") return quarterRange(fyYear, quarter);
+    if (periodMode === "quarter") return [quarterRange(fyYear, quarter)];
     if (periodMode === "range" && (rangeFrom || rangeTo)) {
-      return { from: rangeFrom || "0001-01-01", to: rangeTo || "9999-12-31" };
+      return [{ from: rangeFrom || "0001-01-01", to: rangeTo || "9999-12-31" }];
     }
-    if (periodMode === "month" && month !== "all") {
-      const lastDay = new Date(fyYear, Number(month), 0).getDate();
-      return { from: `${year}-${month}-01`, to: `${year}-${month}-${String(lastDay).padStart(2, "0")}` };
+    if (periodMode === "month" && months.length > 0) {
+      return months.map((m) => {
+        const lastDay = new Date(fyYear, Number(m), 0).getDate();
+        return { from: `${year}-${m}-01`, to: `${year}-${m}-${String(lastDay).padStart(2, "0")}` };
+      });
     }
-    return { from: `${year}-01-01`, to: `${year}-12-31` };
-  }, [periodMode, quarter, rangeFrom, rangeTo, month, year]);
+    return [{ from: `${year}-01-01`, to: `${year}-12-31` }];
+  }, [periodMode, quarter, rangeFrom, rangeTo, months, year]);
+  const effectiveWindow = useMemo(
+    () => ({ from: periodWindows[0].from, to: periodWindows[periodWindows.length - 1].to }),
+    [periodWindows],
+  );
 
-  const isAllPeriod = periodMode === "month" && month === "all";
-  const inWindow = (dates: string[]) => dates.some((d) => d >= effectiveWindow.from && d <= effectiveWindow.to);
+  const isAllPeriod = periodMode === "month" && months.length === 0;
+  const inWindow = (dates: string[]) => dates.some((d) => periodWindows.some((w) => d >= w.from && d <= w.to));
 
   // sum a plant's buckets across the active period window
   const plantRowsAll = useMemo(() => {
@@ -358,7 +380,7 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
         || points(b.total) - points(a.total)
         || b.total.graphics.length - a.total.graphics.length);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, year, passPts, failPts, effectiveWindow, isAllPeriod]);
+  }, [data, year, passPts, failPts, periodWindows, isAllPeriod]);
 
   const plantRows = plantRowsAll;
   const grand = useMemo(() => {
@@ -400,7 +422,7 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
   const periodLabel =
     periodMode === "quarter" ? `FY${year || "—"} · Q${quarter} (${fmtDay(effectiveWindow.from)}–${fmtDay(effectiveWindow.to)})`
       : periodMode === "range" && (rangeFrom || rangeTo) ? `${effectiveWindow.from} to ${effectiveWindow.to}`
-        : month !== "all" ? `${year || "—"} · ${MONTHS[Number(month) - 1]}`
+        : months.length > 0 ? `${year || "—"} · ${months.map((m) => MONTHS[Number(m) - 1]).join(", ")}`
           : `${year || "—"}`;
   const scopeLabel = periodLabel;
 
@@ -408,7 +430,7 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
   // Excel of what's on screen: Summary (plant totals for the filters, incl. month columns), Monthly
   // (plant × month for the whole year — pivot-friendly) and Graphics (every graphic behind the totals).
   // onlyPlant = export just that plant (drill-down button); omitted = every plant on screen.
-  const periodSuffix = `${year}${periodMode === "quarter" ? `-Q${quarter}` : periodMode === "range" ? "-range" : month !== "all" ? `-${month}` : ""}`;
+  const periodSuffix = `${year}${periodMode === "quarter" ? `-Q${quarter}` : periodMode === "range" ? "-range" : months.length > 0 ? `-${months.join("_")}` : ""}`;
   const plantFileName = (plant: string) => `Plant_Performance_${plant.replace(/[^A-Za-z0-9]+/g, "_")}_${periodSuffix}.xlsx`;
 
   // Builds the performance workbook for one plant (or every plant on screen) and returns its bytes.
@@ -677,14 +699,17 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
   // VS&Co "Graphic development tracking chart" (S/O tracking + RFT / on-time audit tabs) for the
   // selected period: every VS/PINK strike-off whose first DHL date falls in the window, written into
   // the planner's original workbook layout. See app/lib/soTrackingChart.ts for the column map.
-  const soTrackingCount = useMemo(
-    () => buildSoTrackingLines(rows, { ...effectiveWindow, season, category }).length,
-    [rows, effectiveWindow, season, category],
+  // Built over the overall span, then narrowed to the picked windows (multi-month can skip months).
+  const soTrackingLines = useMemo(
+    () => buildSoTrackingLines(rows, { ...effectiveWindow, season, category })
+      .filter((l) => periodWindows.some((w) => l.submissionDate >= w.from && l.submissionDate <= w.to)),
+    [rows, effectiveWindow, periodWindows, season, category],
   );
+  const soTrackingCount = soTrackingLines.length;
   const exportSoTrackingChart = async () => {
     setExporting(true);
     try {
-      const lines = buildSoTrackingLines(rows, { ...effectiveWindow, season, category });
+      const lines = soTrackingLines;
       if (lines.length === 0) return; // button is disabled at 0 anyway
       const [fy, fm] = effectiveWindow.from.split("-").map(Number);
       const fiscalYear = periodMode === "quarter"
@@ -693,7 +718,9 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
       const buf = await buildSoTrackingWorkbook(lines, fiscalYear);
       const label = periodMode === "quarter"
         ? `${fiscalYear} Q${quarter} (${fmtDay(effectiveWindow.from)}-${fmtDay(effectiveWindow.to)} ${effectiveWindow.to.slice(0, 4)})`
-        : `${effectiveWindow.from} to ${effectiveWindow.to}`;
+        : periodMode === "month" && months.length > 1
+          ? `${year} ${months.map((m) => MONTHS[Number(m) - 1]).join("-")}`
+          : `${effectiveWindow.from} to ${effectiveWindow.to}`;
       saveAs(new Blob([buf], { type: XLSX_MIME }), `${label} Graphic development tracking chart.xlsx`);
     } catch (err) {
       console.error("S/O tracking chart export failed:", err);
@@ -731,10 +758,35 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
               ))}
             </div>
             {periodMode === "month" && (
-              <select value={month} onChange={(e) => setMonth(e.target.value)} className={selectCls}>
-                <option value="all">All months</option>
-                {MONTHS.map((m, i) => <option key={m} value={String(i + 1).padStart(2, "0")}>{m}</option>)}
-              </select>
+              <div className="relative" ref={monthMenuRef}>
+                <button type="button" onClick={() => setMonthMenuOpen((o) => !o)}
+                  className={`${selectCls} flex items-center gap-2 min-w-[130px] justify-between`}
+                  title="Pick one or more months — totals and exports cover every ticked month">
+                  <span className="truncate max-w-[180px]">
+                    {months.length === 0 ? "All months" : months.map((m) => MONTHS[Number(m) - 1]).join(", ")}
+                  </span>
+                  <span className="text-zinc-500">▾</span>
+                </button>
+                {monthMenuOpen && (
+                  <div className="absolute left-0 mt-1.5 w-48 bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl z-30 py-1 text-sm">
+                    <button type="button" onClick={() => setMonths([])}
+                      className={`w-full text-left px-3 py-1.5 hover:bg-zinc-800 ${months.length === 0 ? "text-amber-400 font-bold" : "text-zinc-200"}`}>
+                      All months
+                    </button>
+                    <div className="border-t border-zinc-800 my-1" />
+                    {MONTHS.map((m, i) => {
+                      const v = String(i + 1).padStart(2, "0");
+                      return (
+                        <label key={m} className="flex items-center gap-2 px-3 py-1.5 hover:bg-zinc-800 cursor-pointer text-zinc-200">
+                          <input type="checkbox" checked={months.includes(v)} onChange={() => toggleMonth(v)}
+                            className="accent-amber-500" />
+                          {m}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
             {periodMode === "quarter" && (
               <select value={quarter} onChange={(e) => setQuarter(Number(e.target.value) as 1 | 2 | 3 | 4)} className={selectCls}
@@ -896,12 +948,13 @@ export default function PlantPerformanceView({ rows, archivedRows = [] }: PlantP
                   <th className="text-center px-3 py-3 font-black text-sky-400">Points</th>
                   {MONTHS.map((m, i) => (
                     <th key={m}
-                      className={`text-center px-2 py-3 font-black cursor-pointer hover:text-white ${periodMode === "month" && month === String(i + 1).padStart(2, "0") ? "text-amber-400" : ""}`}
+                      className={`text-center px-2 py-3 font-black cursor-pointer hover:text-white ${periodMode === "month" && months.includes(String(i + 1).padStart(2, "0")) ? "text-amber-400" : ""}`}
                       onClick={() => {
-                        setPeriodMode("month");
-                        setMonth(periodMode === "month" && month === String(i + 1).padStart(2, "0") ? "all" : String(i + 1).padStart(2, "0"));
+                        const v = String(i + 1).padStart(2, "0");
+                        if (periodMode !== "month") { setPeriodMode("month"); setMonths([v]); }
+                        else toggleMonth(v);
                       }}
-                      title="Click to filter the totals to this month">
+                      title="Click to add / remove this month from the totals">
                       {m}
                     </th>
                   ))}

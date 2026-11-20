@@ -2,6 +2,25 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { EmbellishmentRow, isRowSent, colorApprovalByCombo, isOnBuyList, getBuyTypes, BUY_TYPES, BuyType } from "../lib/db";
 import { rowFilterPlants } from "../lib/plantUtils";
 
+// Fabric Reference (col13) can hold several refs in one cell ("FB # 22142, FB # 22291"). Each ref
+// becomes its own filter entry, keyed with spaces / "#" / "." / "-" removed and upper-cased so
+// "FB # 22142", "FB22142" and "fb-22142" collapse onto one key. Returns [key, label] pairs.
+export function fabricRefTokens(value: unknown): [string, string][] {
+  const out: [string, string][] = [];
+  const seen = new Set<string>();
+  String(value ?? "")
+    .split(/[,;\n/&+]/)
+    .forEach((part) => {
+      const label = part.trim();
+      if (!label || label === "-" || /^n\/?a$/i.test(label)) return;
+      const key = label.toUpperCase().replace(/[\s#.\-_]/g, "");
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push([key, label]);
+    });
+  return out;
+}
+
 interface FilterControlsProps {
   searchQuery: string;
   setSearchQuery: (query: string) => void;
@@ -17,6 +36,8 @@ interface FilterControlsProps {
   setSelectedPlantFilter?: (plant: string) => void;
   selectedGroundFilter?: string;
   setSelectedGroundFilter?: (ground: string) => void;
+  selectedFabricRefFilter?: string;
+  setSelectedFabricRefFilter?: (fabricRef: string) => void;
   dhlFilter?: "all" | "withDhl" | "noDhl";
   setDhlFilter?: (dhlFilter: "all" | "withDhl" | "noDhl") => void;
   colorFilter?: "all" | "colorApproved" | "missingColor";
@@ -28,6 +49,8 @@ interface FilterControlsProps {
   rows: EmbellishmentRow[];
   // Rows left by every active filter except Ground — scopes the Ground dropdown. Falls back to rows.
   groundRows?: EmbellishmentRow[];
+  // Rows left by every active filter except Fabric Reference — scopes that dropdown.
+  fabricRefRows?: EmbellishmentRow[];
   // Rows left by every active filter except Plant — scopes the Plant dropdown. Falls back to rows.
   plantRows?: EmbellishmentRow[];
   // Rows left by every active filter except Trigger — scopes the Trigger dropdown. Falls back to rows.
@@ -68,6 +91,8 @@ export default function FilterControls({
   setSelectedPlantFilter,
   selectedGroundFilter,
   setSelectedGroundFilter,
+  selectedFabricRefFilter,
+  setSelectedFabricRefFilter,
   dhlFilter,
   setDhlFilter,
   colorFilter,
@@ -78,6 +103,7 @@ export default function FilterControls({
   setBuyTypeFilter,
   rows,
   groundRows,
+  fabricRefRows,
   plantRows,
   triggerRows,
   categoryRows,
@@ -201,6 +227,44 @@ export default function FilterControls({
     ? groundCounts.find(([key]) => key === selectedGroundFilter)?.[1].label || selectedGroundFilter
     : "All Grounds";
 
+  // Fabric References (col13) for the Fabric Ref dropdown — one entry per ref (see fabricRefTokens),
+  // counted over the rows left by every other active filter.
+  const fabricRefCounts = useMemo(() => {
+    const counts = new Map<string, { label: string; count: number }>();
+    (fabricRefRows ?? rows).forEach((r) => {
+      fabricRefTokens(r.col13).forEach(([key, label]) => {
+        const entry = counts.get(key);
+        if (entry) entry.count++;
+        else counts.set(key, { label, count: 1 });
+      });
+    });
+    return Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [fabricRefRows, rows]);
+
+  const [fabricRefOpen, setFabricRefOpen] = useState<boolean>(false);
+  const [fabricRefSearch, setFabricRefSearch] = useState<string>("");
+  const fabricRefContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!fabricRefOpen) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (fabricRefContainerRef.current && !fabricRefContainerRef.current.contains(event.target as Node)) {
+        setFabricRefOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [fabricRefOpen]);
+
+  const filteredFabricRefs = useMemo(() => {
+    const q = fabricRefSearch.trim().toUpperCase().replace(/[\s#.\-_]/g, "");
+    return q ? fabricRefCounts.filter(([key]) => key.includes(q)) : fabricRefCounts;
+  }, [fabricRefCounts, fabricRefSearch]);
+
+  const selectedFabricRefLabel = selectedFabricRefFilter
+    ? fabricRefCounts.find(([key]) => key === selectedFabricRefFilter)?.[1].label || selectedFabricRefFilter
+    : "All Fabric Refs";
+
   // Count of rows with DHL tracking and without
   const dhlRowCount = useMemo(() => {
     return (dhlRows ?? rows).filter((r) => (String(String(String(String(r.col24 || ""))))).trim() !== "").length;
@@ -234,6 +298,7 @@ export default function FilterControls({
     (selectedTriggerFilter && selectedTriggerFilter.length > 0) ||
     (selectedPlantFilter && selectedPlantFilter !== "") ||
     (selectedGroundFilter && selectedGroundFilter !== "") ||
+    (selectedFabricRefFilter && selectedFabricRefFilter !== "") ||
     (selectedTeamFilter && selectedTeamFilter !== "All Teams")
   );
 
@@ -249,6 +314,7 @@ export default function FilterControls({
     if (setSelectedTriggerFilter) setSelectedTriggerFilter([]);
     if (setSelectedPlantFilter) setSelectedPlantFilter("");
     if (setSelectedGroundFilter) setSelectedGroundFilter("");
+    if (setSelectedFabricRefFilter) setSelectedFabricRefFilter("");
     if (setSelectedTeamFilter) setSelectedTeamFilter("All Teams");
     if (setSelectedStatusFilter) setSelectedStatusFilter("Active");
   };
@@ -632,6 +698,87 @@ export default function FilterControls({
                   ))}
                   {filteredGrounds.length === 0 && (
                     <div className="px-3 py-2 text-zinc-400">No matching ground colours</div>
+                  )}
+                </div>
+              </div>
+            )}
+            <div className="absolute top-0 bottom-0 h-[34px] right-0 pr-2.5 flex items-center pointer-events-none text-zinc-500 dark:text-zinc-400">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </div>
+          </div>
+        )}
+
+        {/* Fabric Reference Filter Dropdown (col13) */}
+        {selectedFabricRefFilter !== undefined && setSelectedFabricRefFilter && (
+          <div className="relative" ref={fabricRefContainerRef}>
+            <button
+              type="button"
+              onClick={() => {
+                setFabricRefOpen((o) => !o);
+                setFabricRefSearch("");
+              }}
+              className={`flex items-center gap-1.5 pl-3.5 pr-8 py-2 rounded-xl text-xs font-semibold shadow-sm transition-all border cursor-pointer max-w-[200px] ${
+                selectedFabricRefFilter
+                  ? "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30"
+                  : "bg-white dark:bg-zinc-900 hover:bg-zinc-50 dark:hover:bg-zinc-850 border-zinc-200 dark:border-zinc-800 text-zinc-700 dark:text-zinc-300"
+              }`}
+              title="Filter by Fabric Reference"
+            >
+              <span className="truncate">{selectedFabricRefLabel}</span>
+            </button>
+            {fabricRefOpen && (
+              <div className="absolute left-0 mt-1.5 w-72 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-xl z-30 text-xs">
+                <div className="p-2 border-b border-zinc-100 dark:border-zinc-800">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={fabricRefSearch}
+                    onChange={(e) => setFabricRefSearch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setFabricRefOpen(false);
+                      if (e.key === "Enter" && filteredFabricRefs.length > 0) {
+                        setSelectedFabricRefFilter(filteredFabricRefs[0][0]);
+                        setFabricRefOpen(false);
+                      }
+                    }}
+                    placeholder="Search fabric reference..."
+                    className="w-full px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-zinc-800 dark:text-zinc-100 placeholder-zinc-400"
+                  />
+                </div>
+                <div className="max-h-72 overflow-y-auto py-1">
+                  {!fabricRefSearch.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedFabricRefFilter("");
+                        setFabricRefOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+                        !selectedFabricRefFilter ? "text-blue-600 dark:text-blue-400 font-semibold" : "text-zinc-700 dark:text-zinc-300"
+                      }`}
+                    >
+                      All Fabric Refs
+                    </button>
+                  )}
+                  {filteredFabricRefs.map(([key, { label, count }]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => {
+                        setSelectedFabricRefFilter(key);
+                        setFabricRefOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+                        selectedFabricRefFilter === key ? "text-blue-600 dark:text-blue-400 font-semibold" : "text-zinc-700 dark:text-zinc-300"
+                      }`}
+                    >
+                      {label} <span className="text-zinc-400">({count})</span>
+                    </button>
+                  ))}
+                  {filteredFabricRefs.length === 0 && (
+                    <div className="px-3 py-2 text-zinc-400">No matching fabric references</div>
                   )}
                 </div>
               </div>
