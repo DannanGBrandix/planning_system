@@ -82,7 +82,6 @@ import TriggerManagementView from "./components/TriggerManagementView";
 import ReportsView from "./components/ReportsView";
 import SummaryOfGraphicsView from "./components/SummaryOfGraphicsView";
 import EventStatusPanel from "./components/EventStatusPanel";
-import SlaWatchlistBar from "./components/SlaWatchlistBar";
 import DueTomorrowAlertModal from "./components/DueTomorrowAlertModal";
 import BackupsModal from "./components/BackupsModal";
 import { autoScheduleEmbellishmentRow, autoScheduleAnchoredToEvent, hasCompleteAllocationContext, detectMatchingFlow, detectPlanCycles } from "./lib/planningFlows";
@@ -91,7 +90,7 @@ import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants, parseCross
 import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
 import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
-import { isHiddenEventTrigger, seasonBase } from "./lib/triggerUtils";
+import { isHiddenEventTrigger } from "./lib/triggerUtils";
 import {
   ckCategoryFromFilename,
   ckCategoryCanonical,
@@ -307,7 +306,6 @@ export default function Home() {
   useEffect(() => {
     isImportSyncingRef.current = isImportSyncing;
   }, [isImportSyncing]);
-  const [showCpSpModal, setShowCpSpModal] = useState<boolean>(false);
   const [isBackupsModalOpen, setIsBackupsModalOpen] = useState<boolean>(false);
 
   // ── CK Charts sync ──────────────────────────────────────────────────────
@@ -1146,56 +1144,10 @@ export default function Home() {
           }
         } else {
           // Non-planning field change (e.g. AOQ, Comment, DHL) -> Update in place, preserve version_number
-          const aoqChanged = normalizeStr(originalRow.col20) !== normalizeStr(updatedRow.col20);
-
-          if (aoqChanged) {
-            // Fans an AOQ edit out to every OTHER row sharing this same Trigger — "KNIT" recurs
-            // every season with its own real deadline (SU27's KNIT AOQ isn't SP27's), so the key
-            // must include Category + Season, not just the Trigger text. Without this, editing
-            // AOQ on one season's "KNIT" row silently overwrote every other season's "KNIT" rows
-            // too (confirmed: a SU27 row was showing SP27's AOQ date because of exactly this).
-            // CK-family rows have no real Trigger (col2 is just the season), so keying on it fanned
-            // one CK row's AOQ out to the whole Category+Season. CK AOQ is per row: an edit changes
-            // only the row being edited (planner, 2026-10-15 — not even same-graphic siblings).
-            const getDropKey = (r: EmbellishmentRow): string => {
-              const col2Val = String(r.col2 || "").trim();
-              let triggerPart: string;
-              if (isCkFamilyCategory(String(r.col3 || ""))) {
-                triggerPart = `ROW:${r.id}`;
-              } else if (col2Val && col2Val.toUpperCase() !== "N/A") {
-                triggerPart = col2Val.toUpperCase();
-              } else {
-                const col4Val = String(r.col4 || "").trim();
-                const match = col4Val.match(/(\d{1,2}\.\d{1,2}(?:\/\d{1,2}\.\d{1,2})?\s*(?:DROP)?)/i);
-                triggerPart = match ? match[1].trim().toUpperCase() : col4Val.toUpperCase();
-              }
-              const category = String(r.col3 || "").trim().toUpperCase();
-              const season = seasonBase(r.col4);
-              return `${triggerPart}|||${category}|||${season}`;
-            };
-
-            const targetDrop = getDropKey(originalRow);
-
-            if (targetDrop) {
-              const newAoqVal = updatedRow.col20;
-              const matchingRows = rows.filter((r) => r.is_current !== false && getDropKey(r) === targetDrop);
-
-              if (matchingRows.length > 0) {
-                const updatedDropRows = matchingRows.map((r) => ({
-                  ...r,
-                  col20: newAoqVal,
-                }));
-
-                await saveMultipleRows(updatedDropRows);
-
-                const updatedIdsSet = new Set(updatedDropRows.map((r) => r.id));
-                setRows((prev) =>
-                  prev.map((r) => (updatedIdsSet.has(r.id) ? { ...r, col20: newAoqVal } : r))
-                );
-                return;
-              }
-            }
-          }
+          // AOQ (col20) is per row for every category: an edit changes only the row being edited.
+          // VS/PINK used to fan it out to every row with the same Trigger + Category + Season; CK went
+          // per row on 2026-10-15 and VS/PINK followed on 2026-11-20 (planner). Trigger Manager's
+          // Category+Season AOQ is the explicit bulk tool when a whole season needs one date.
 
           const updatedInPlaceRow: EmbellishmentRow = {
             ...originalRow,
@@ -6315,198 +6267,8 @@ export default function Home() {
                 <>
                   <div className="sticky left-0 w-[100vw] max-w-[100vw] z-40 pointer-events-none">
                     <div className="max-w-7xl mx-auto px-6 pt-8 w-full flex flex-col pointer-events-auto">
-                  {/* 3-Day Plant S/OFF SLA Priority Watchlist Bar */}
-                  <SlaWatchlistBar
-                    rows={currentVersionRows}
-                    activeFilter={slaFilter}
-                    onFilterChange={setSlaFilter}
-                    onOpenDueTomorrowAlert={() => setIsDueTomorrowAlertOpen(true)}
-                  />
-
                   {/* Show Dashboard Stats for non-management */}
                   <DashboardStats rows={currentVersionRows} />
-
-                  {/* C+P SP ATTENTION BANNER — Standard Dashboard */}
-                  {(() => {
-                    const hasCategoryFilter = (selectedCategoryFilter && selectedCategoryFilter !== "") || (advancedSelections?.category && advancedSelections.category.length > 0);
-                    const hasSeasonFilter = (selectedSeasonFilter && selectedSeasonFilter !== "") || (advancedSelections?.season && advancedSelections.season.length > 0);
-                    if (!hasCategoryFilter && !hasSeasonFilter) return null;
-
-                    const cpSpRows = displayedRows.filter(r => {
-                      const c22 = (String(String(String(String(r.col22 || ''))))).trim().toLowerCase();
-                      const c34 = (String(String(String(String(r.col34 || ''))))).trim().toLowerCase();
-                      return c22.includes('c+p sp') || c34.includes('c+p sp') ||
-                             c22.includes('c+p') || c34.includes('c+p');
-                    });
-                    if (cpSpRows.length === 0) return null;
-                    const unapproved = cpSpRows.filter(r => (String(String(String(String(r.col20 || ''))))).toLowerCase() !== 'c+p');
-                    return (
-                      <div className="mb-4 bg-gradient-to-r from-amber-950/80 via-orange-950/60 to-amber-950/80 border border-amber-500/40 p-4 rounded-xl flex flex-wrap items-center justify-between gap-4 shadow-lg">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-amber-500/20 border-2 border-amber-400/60 flex items-center justify-center text-amber-300 animate-bounce" style={{ animationDuration: '2s' }}>
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                            </svg>
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <h3 className="text-amber-300 font-bold text-sm tracking-wider uppercase">C+P SP — Correct and Process</h3>
-                              <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-200 font-mono font-extrabold border border-amber-500/40">
-                                {cpSpRows.length} item{cpSpRows.length !== 1 ? 's' : ''}
-                              </span>
-                            </div>
-                            <p className="text-amber-200/60 text-xs mt-0.5">
-                              Items with &quot;C+P&quot; (Correct and Process) in strike-off comments are automatically updated to <strong className="text-teal-300">C+P</strong>. Review them to verify corrections.
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <button
-                            onClick={() => setShowCpSpModal(true)}
-                            className="px-4 py-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 hover:border-amber-400/80 text-amber-200 text-xs font-bold rounded-lg transition-all uppercase tracking-wider flex items-center gap-2"
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                            </svg>
-                            View All
-                          </button>
-                          {unapproved.length > 0 && (
-                            <button
-                              onClick={() => handleAutoApproveCpSp(unapproved.map(r => r.id))}
-                              className="px-4 py-2 bg-emerald-600/80 hover:bg-emerald-500 border border-emerald-400/50 hover:border-emerald-300 text-white text-xs font-bold rounded-lg transition-all uppercase tracking-wider flex items-center gap-2"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-                              </svg>
-                              Auto-Approve All ({unapproved.length})
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-                  {/* C+P SP DETAIL MODAL — Standard Dashboard */}
-                  {showCpSpModal && (() => {
-                    const cpSpRows = displayedRows.filter(r => {
-                      const c22 = (String(String(String(String(r.col22 || ''))))).trim().toLowerCase();
-                      const c34 = (String(String(String(String(r.col34 || ''))))).trim().toLowerCase();
-                      return c22.includes('c+p sp') || c34.includes('c+p sp') ||
-                             c22.includes('c+p') || c34.includes('c+p');
-                    });
-                    const unapproved = cpSpRows.filter(r => (String(String(String(String(r.col20 || ''))))).toLowerCase() !== 'approved');
-                    return (
-                      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setShowCpSpModal(false)}>
-                        <div className="bg-[#0c1824] border border-amber-500/30 rounded-xl shadow-2xl w-full max-w-5xl max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
-                          {/* Modal Header */}
-                          <div className="flex items-center justify-between px-6 py-4 border-b border-amber-500/20 bg-gradient-to-r from-amber-950/60 to-transparent">
-                            <div className="flex items-center gap-3">
-                              <div className="w-8 h-8 rounded-full bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-300">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                                </svg>
-                              </div>
-                              <div>
-                                <h2 className="text-amber-200 font-bold text-base tracking-wider uppercase">C+P SP Items</h2>
-                                <p className="text-amber-300/50 text-[10px]">Strike-off comments containing &quot;C+P SP&quot; — Correct and Process</p>
-                              </div>
-                            </div>
-                            <button onClick={() => setShowCpSpModal(false)} className="text-zinc-400 hover:text-white transition-colors p-1">
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
-                          </div>
-
-                          {/* Modal Body */}
-                          <div className="overflow-auto max-h-[65vh] p-4">
-                            <table className="w-full text-left text-xs text-white uppercase tracking-wider">
-                              <thead>
-                                <tr className="border-b border-zinc-700">
-                                  <th className="pb-2 px-2 font-bold text-zinc-400">Style</th>
-                                  <th className="pb-2 px-2 font-bold text-zinc-400">Graphic</th>
-                                  <th className="pb-2 px-2 font-bold text-zinc-400">Combo</th>
-                                  <th className="pb-2 px-2 font-bold text-zinc-400">Category</th>
-                                  <th className="pb-2 px-2 font-bold text-zinc-400">Season</th>
-                                  <th className="pb-2 px-2 font-bold text-zinc-400">1st S/O Comment</th>
-                                  <th className="pb-2 px-2 font-bold text-zinc-400">2nd S/O Comment</th>
-                                  <th className="pb-2 px-2 font-bold text-zinc-400">Current Status</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {cpSpRows.map((r) => {
-                                  const currentStatus = String(r.col20 || 'Pending').trim();
-                                  const isApproved = currentStatus.toLowerCase() === 'approved';
-                                  return (
-                                    <tr key={r.id} className={`border-b border-zinc-800/50 transition-colors ${
-                                      isApproved ? 'bg-emerald-950/30' : 'bg-amber-950/20 hover:bg-amber-950/40'
-                                    }`}>
-                                      <td className="py-2 px-2 text-zinc-300 text-[10px] font-mono">{r.col5 || '-'}</td>
-                                      <td className="py-2 px-2 text-[#00ffd5] text-[10px] font-mono">{r.col7 || '-'}</td>
-                                      <td className="py-2 px-2 text-zinc-300 text-[10px]">{r.col6 || '-'}</td>
-                                      <td className="py-2 px-2 text-zinc-400 text-[10px]">{r.col3 || '-'}</td>
-                                      <td className="py-2 px-2 text-zinc-400 text-[10px]">{r.col4 || '-'}</td>
-                                      <td className="py-2 px-2">
-                                        {r.col22 ? (
-                                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                            (String(String(String(String(r.col22 || ''))))).toLowerCase().includes('c+p') ? 'bg-amber-500/20 text-amber-200 font-bold border border-amber-500/30' : 'text-zinc-300'
-                                          }`}>{String(String(String(String(r.col22 || "")))).trim()}</span>
-                                        ) : <span className="text-zinc-600 text-[10px]">-</span>}
-                                      </td>
-                                      <td className="py-2 px-2">
-                                        {r.col34 ? (
-                                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                                            (String(String(String(String(r.col34 || ''))))).toLowerCase().includes('c+p') ? 'bg-amber-500/20 text-amber-200 font-bold border border-amber-500/30' : 'text-zinc-300'
-                                          }`}>{String(String(String(String(r.col34 || "")))).trim()}</span>
-                                        ) : <span className="text-zinc-600 text-[10px]">-</span>}
-                                      </td>
-                                      <td className="py-2 px-2">
-                                        <span className={`text-[9px] px-2 py-0.5 rounded font-bold uppercase ${
-                                          isApproved ? 'bg-green-900/80 text-green-300 border border-green-700/50' : 'bg-red-900/60 text-red-300 border border-red-700/50'
-                                        }`}>
-                                          {currentStatus}
-                                        </span>
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                            {cpSpRows.length === 0 && (
-                              <div className="text-center text-zinc-500 text-sm py-12">No items with C+P SP comments found.</div>
-                            )}
-                          </div>
-
-                          {/* Modal Footer */}
-                          <div className="flex items-center justify-between px-6 py-3 border-t border-zinc-800 bg-[#0a1520]">
-                            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">
-                              {cpSpRows.length} total &bull; {unapproved.length} not yet approved
-                            </span>
-                            <div className="flex gap-2">
-                              {unapproved.length > 0 && (
-                                <button
-                                  onClick={() => { handleAutoApproveCpSp(unapproved.map(r => r.id)); setShowCpSpModal(false); }}
-                                  className="px-4 py-1.5 bg-emerald-600/80 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-all uppercase tracking-wider flex items-center gap-2"
-                                >
-                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-                                  </svg>
-                                  Approve All ({unapproved.length})
-                                </button>
-                              )}
-                              <button
-                                onClick={() => setShowCpSpModal(false)}
-                                className="px-4 py-1.5 bg-zinc-700 hover:bg-zinc-600 text-white text-xs font-bold rounded-lg transition-all"
-                              >
-                                Close
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })()}
 
                   {/* Plant department selector tabs */}
                   {currentRole === "Plant Department" && (
