@@ -147,6 +147,7 @@ export default function AdvancedDashboard({
         onUpdateRow({
           ...r,
           col20: newDateStr,
+          _aoq_scope: "row", // this table already applies the date to every row of the trigger
         });
       });
     }

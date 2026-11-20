@@ -92,7 +92,7 @@ import { plantFromFlow, legPlantFlow, extractPlants, rowFilterPlants, parseCross
 import { deriveNycVerdict, readNycVerdict, rowRefIso } from "./lib/nycVerdict";
 import { extractDateFromTrackingText, extractDropDateIso } from "./lib/trackingDates";
 import { calculateSoffSlaStatus } from "./lib/slaUtils";
-import { isHiddenEventTrigger } from "./lib/triggerUtils";
+import { isHiddenEventTrigger, seasonBase } from "./lib/triggerUtils";
 import {
   ckCategoryFromFilename,
   ckCategoryCanonical,
@@ -287,6 +287,16 @@ export default function Home() {
   const [buyImport, setBuyImport] = useState<{ fileName: string; parsed: ParsedBuyFile } | null>(null);
   // "Import DRA" — Development Risk Assessment workbook (see lib/draImport.ts).
   const [draImport, setDraImport] = useState<{ fileName: string; parsed: ParsedDraFile } | null>(null);
+  // VS/PINK AOQ edit: ask whether the new date is for this row only or every row of its
+  // Trigger + Category + Season (see handleUpdateRow). Resolved by the small dialog at the bottom.
+  const [aoqScopeAsk, setAoqScopeAsk] = useState<{
+    trigger: string;
+    category: string;
+    season: string;
+    count: number;
+    date: string;
+    resolve: (choice: "row" | "all" | "cancel") => void;
+  } | null>(null);
   // HO27 Dev Pack Tracker import (own parser/preview — see lib/devPackImport.ts).
   const [devPackImport, setDevPackImport] = useState<{
     fileName: string;
@@ -866,7 +876,58 @@ export default function Home() {
         return;
       }
 
+      // "_aoq_scope": "row" = the caller already decided (bulk tools that loop over rows) — never ask.
+      const aoqScopePreset = updatedRow._aoq_scope;
+      if ("_aoq_scope" in updatedRow) {
+        updatedRow = { ...updatedRow };
+        delete updatedRow._aoq_scope;
+      }
+
       const originalRow = rows.find((r) => r.id === updatedRow.id);
+
+      // VS / PINK AOQ date edit: this row only, or every row of the same Trigger + Category +
+      // Season? (planner, 2026-11-20 — sometimes one graphic moves, sometimes the whole trigger).
+      // CK stays per row without asking (no real Trigger — col2 is just the season). Only a DATE
+      // asks; a verdict word (Approved / Dropped / C+P) is always per row.
+      if (originalRow && !aoqScopePreset) {
+        const oldAoq = String(originalRow.col20 ?? "").trim();
+        const newAoq = String(updatedRow.col20 ?? "").trim();
+        const isDate = /^\d{4}-\d{2}-\d{2}$/.test(newAoq) || /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(newAoq);
+        if (newAoq !== oldAoq && isDate && !isCkFamilyCategory(String(originalRow.col3 || ""))) {
+          const keyOf = (r: EmbellishmentRow) =>
+            [String(r.col2 || "").trim().toUpperCase(), String(r.col3 || "").trim().toUpperCase(), seasonBase(r.col4)].join("|");
+          const key = keyOf(originalRow);
+          const trigger = String(originalRow.col2 || "").trim();
+          const siblings = trigger && trigger.toUpperCase() !== "N/A"
+            ? rows.filter((r) => r.id !== originalRow.id && r.is_current !== false && keyOf(r) === key)
+            : [];
+          if (siblings.length > 0) {
+            const choice = await new Promise<"row" | "all" | "cancel">((resolve) =>
+              setAoqScopeAsk({
+                trigger,
+                category: String(originalRow.col3 || "").trim(),
+                season: seasonBase(originalRow.col4),
+                count: siblings.length + 1,
+                date: newAoq,
+                resolve,
+              }),
+            );
+            setAoqScopeAsk(null);
+            if (choice === "cancel") return;
+            if (choice === "all") {
+              const patched = siblings.map((r) => ({
+                ...r,
+                col20: newAoq,
+                change_reason: `AOQ set for all of ${trigger} (${String(originalRow.col3 || "").trim()} ${seasonBase(originalRow.col4)})`,
+              }));
+              await saveMultipleRows(patched);
+              const byId = new Map(patched.map((r) => [r.id, r]));
+              setRows((prev) => prev.map((r) => byId.get(r.id) ?? r));
+            }
+          }
+        }
+      }
+
       if (originalRow) {
         // Compare values to see what changed
         const allKeys = Array.from(
@@ -1150,10 +1211,8 @@ export default function Home() {
           }
         } else {
           // Non-planning field change (e.g. AOQ, Comment, DHL) -> Update in place, preserve version_number
-          // AOQ (col20) is per row for every category: an edit changes only the row being edited.
-          // VS/PINK used to fan it out to every row with the same Trigger + Category + Season; CK went
-          // per row on 2026-10-15 and VS/PINK followed on 2026-11-20 (planner). Trigger Manager's
-          // Category+Season AOQ is the explicit bulk tool when a whole season needs one date.
+          // AOQ (col20): the "this row / whole Trigger" choice is made at the top of handleUpdateRow
+          // (other rows are saved there); this branch saves the edited row with ALL its changes.
 
           const updatedInPlaceRow: EmbellishmentRow = {
             ...originalRow,
@@ -6468,6 +6527,42 @@ export default function Home() {
         logs={auditLogs}
         onClearLogs={handleClearAuditLogs}
       />
+
+      {aoqScopeAsk && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-zinc-950/60 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-zinc-900 border border-zinc-700 rounded-2xl shadow-2xl p-5">
+            <h2 className="text-base font-bold text-zinc-100">Set AOQ to {aoqScopeAsk.date}</h2>
+            <p className="text-xs text-zinc-400 mt-2">
+              <span className="font-semibold text-zinc-200">{aoqScopeAsk.count} rows</span> share Trigger{" "}
+              <span className="font-semibold text-amber-300">{aoqScopeAsk.trigger}</span> in {aoqScopeAsk.category} {aoqScopeAsk.season}.
+              Apply the new AOQ to:
+            </p>
+            <div className="flex flex-col gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => aoqScopeAsk.resolve("row")}
+                className="w-full px-4 py-2.5 rounded-xl text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white text-left"
+              >
+                Only this row
+              </button>
+              <button
+                type="button"
+                onClick={() => aoqScopeAsk.resolve("all")}
+                className="w-full px-4 py-2.5 rounded-xl text-sm font-bold bg-amber-500 hover:bg-amber-400 text-zinc-900 text-left"
+              >
+                All {aoqScopeAsk.count} rows of {aoqScopeAsk.trigger}
+              </button>
+              <button
+                type="button"
+                onClick={() => aoqScopeAsk.resolve("cancel")}
+                className="w-full px-4 py-2 rounded-xl text-xs font-semibold bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+              >
+                Cancel — don&apos;t save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {draImport && (
         <DraImportModal
